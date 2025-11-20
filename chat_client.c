@@ -73,30 +73,27 @@ int main(int argc, char *argv[])
     struct sockaddr_in server_addr, responder_addr;
 
     int rc = set_socket_addr(&server_addr, "127.0.0.1", SERVER_PORT);
+    assert(rc == 0);
 
-    // Storage for request and response messages
-    char client_request[BUFFER_SIZE], server_response[BUFFER_SIZE];
+    pthread_t listener, sender;
 
-    // Demo code (remove later)
-    strcpy(client_request, "Dummy Request");
+    struct sender_args {
+        int sd;
+        struct sockaddr_in addr;
+    };
 
-    // This function writes to the server (sends request)
-    // through the socket at sd.
-    // (See details of the function in udp.h)
-    rc = udp_socket_write(sd, &server_addr, client_request, BUFFER_SIZE);
 
-    if (rc > 0)
-    {
-        // This function reads the response from the server
-        // through the socket at sd.
-        // In our case, responder_addr will simply be
-        // the same as server_addr.
-        // (See details of the function in udp.h)
-        int rc = udp_socket_read(sd, &responder_addr, server_response, BUFFER_SIZE);
+    struct sender_args args;
+    args.sd = sd;
+    args.addr = server_addr;
 
-        // Demo code (remove later)
-        printf("server_response: %s", server_response);
-    }
+    pthread_create(&listener, NULL, listener_thread, &sd);
 
+    pthread_create(&sender, NULL, sender_thread, &args);
+
+    pthread_join(listener, NULL);
+    pthread_join(sender, NULL);
+
+ 
     return 0;
 }
