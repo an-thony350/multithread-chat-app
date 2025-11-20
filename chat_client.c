@@ -1,7 +1,44 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <assert.h>
+#include <pthread.h>
 #include "udp.h"
 
 #define CLIENT_PORT 10000
+#define SERVER_PORT 20000
+#define BUFFER_SIZE 1024
+#define SERVER_IP "127.0.0.1"
+
+// Global Socket + Server Address
+
+int sd;
+struct sockaddr_in server_addr;
+
+// Listener Thread Function
+void *listener_thread_func(void *arg)
+{ 
+    char server_response[BUFFER_SIZE];
+    struct sockaddr_in responder_addr;
+
+    while (1)
+    {
+
+        int rc = udp_socket_read(sd, &responder_addr, server_response, BUFFER_SIZE);
+
+        if (rc > 0)
+        {
+            buffer[rc] = '\0'; // Null-terminate the received string
+            printf("%s\n", server_response);
+            fflush(stdout);
+        }
+    }
+    return NULL;
+}
+
+
+
+
 
 // client code
 int main(int argc, char *argv[])
