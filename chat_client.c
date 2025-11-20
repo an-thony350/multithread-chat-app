@@ -5,6 +5,12 @@
 #include <pthread.h>
 #include "udp.h"
 
+#define CLIENT_PORT 55555
+
+    struct sender_args {
+        int sd;
+        struct sockaddr_in addr;
+    };
 
 // Listener Thread Function
 void *listener_thread(void *arg)
@@ -29,10 +35,6 @@ void *listener_thread(void *arg)
 // Sender Thread Function
 void *sender_thread(void *arg)
 {
-    struct sender_args {
-        int sd;
-        struct sockaddr_in addr;
-    };
 
     struct sender_args *args = arg;
 
@@ -53,7 +55,7 @@ void *sender_thread(void *arg)
             continue;
 
         // Send the raw request to the server
-        udp_socket_write(sd, &server_addr, client_request, BUFFER_SIZE);
+        udp_socket_write(sd, &server_addr, client_request, strlen(client_request));
 
         // If the user typed disconn$, quit the client
         if (strncmp(client_request, "disconn$", 8) == 0)
@@ -68,20 +70,14 @@ void *sender_thread(void *arg)
 int main(int argc, char *argv[])
 {
     int sd = udp_socket_open(CLIENT_PORT);
+    struct sockaddr_in server_addr;
+    
     assert(sd > -1);
-
-    struct sockaddr_in server_addr, responder_addr;
 
     int rc = set_socket_addr(&server_addr, "127.0.0.1", SERVER_PORT);
     assert(rc == 0);
 
     pthread_t listener, sender;
-
-    struct sender_args {
-        int sd;
-        struct sockaddr_in addr;
-    };
-
 
     struct sender_args args;
     args.sd = sd;
