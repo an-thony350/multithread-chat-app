@@ -161,6 +161,25 @@ static void rtrim(char *s) {
     }
 }
 
+// Trim leading and trailing spaces/tabs
+static void trim_spaces(char *s) {
+    // Trim leading
+    char *start = s;
+    while (*start == ' ' || *start == '\t')
+        start++;
+
+    if (start != s)
+        memmove(s, start, strlen(start) + 1);
+
+    // Trim trailing
+    int len = strlen(s);
+    while (len > 0 && (s[len - 1] == ' ' || s[len - 1] == '\t')) {
+        s[len - 1] = '\0';
+        len--;
+    }
+}
+
+
 // Worker: handle one incoming request 
 static void *request_handler(void *v) {
     worker_arg_t *arg = (worker_arg_t *)v;
@@ -185,6 +204,9 @@ static void *request_handler(void *v) {
     *d = '\0';
     char *type = buf;
     char *payload = d + 1;
+    trim_spaces(type);
+    trim_spaces(payload);
+
 
     // Identify sender index (if exists)
     pthread_rwlock_rdlock(&clients_lock);
