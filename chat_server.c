@@ -10,6 +10,15 @@
 #define MAX_CLIENTS 128
 #define MAX_NAME_LEN 64
 #define MAX_MUTE 64
+#define HISTORY_SIZE 15
+
+static char history[HISTORY_SIZE][BUFFER_SIZE];
+static int history_count = 0;
+static int history_start = 0;
+static pthread_mutex_t history_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void history_add(const char *msg);
+static void history_send_to_client(int sd, struct sockaddr_in *addr);
 
 // Client record 
 typedef struct {
@@ -119,6 +128,7 @@ static int recipient_has_muted_sender(int recipient_idx, const char *sender_name
 // Broadcast message to all clients (skip optional skip_idx, if >=0) 
 // Uses udp_socket_write(sd, &client.addr, ...) to send 
 static void broadcast_all(int sd, const char *msg, int skip_idx) {
+    history_add(msg);
     pthread_rwlock_rdlock(&clients_lock);
     for (int i = 0; i < MAX_CLIENTS; ++i) {
         if (!clients[i].active) continue;
@@ -135,6 +145,8 @@ static void broadcast_from_sender(int sd, int sender_idx, const char *msg) {
     strncpy(sender_name, clients[sender_idx].name, MAX_NAME_LEN);
     sender_name[MAX_NAME_LEN - 1] = '\0';
 
+    history_add(msg);
+    
     pthread_rwlock_rdlock(&clients_lock);
     for (int i = 0; i < MAX_CLIENTS; ++i) {
         if (!clients[i].active) continue;
@@ -144,6 +156,37 @@ static void broadcast_from_sender(int sd, int sender_idx, const char *msg) {
     }
     pthread_rwlock_unlock(&clients_lock);
 }
+
+// Append a message to history (thread-safe)
+static void history_add(const char *msg) {
+    pthread_mutex_lock(&history_lock);
+
+    int index = (history_start + history_count) % HISTORY_SIZE;
+    strncpy(history[index], msg, BUFFER_SIZE - 1);
+    history[index][BUFFER_SIZE - 1] = '\0';
+
+    if (history_count < HISTORY_SIZE) {
+        history_count++;
+    } else {
+        // buffer full: overwrite oldest
+        history_start = (history_start + 1) % HISTORY_SIZE;
+    }
+
+    pthread_mutex_unlock(&history_lock);
+}
+
+// Send last HISTORY_SIZE messages to a new client
+static void history_send_to_client(int sd, struct sockaddr_in *addr) {
+    pthread_mutex_lock(&history_lock);
+
+    for (int i = 0; i < history_count; i++) {
+        int index = (history_start + i) % HISTORY_SIZE;
+        udp_socket_write(sd, addr, history[index], BUFFER_SIZE);
+    }
+
+    pthread_mutex_unlock(&history_lock);
+}
+
 
 // Worker thread argument 
 typedef struct {
@@ -266,6 +309,9 @@ static void *request_handler(void *v) {
         char welcome[BUFFER_SIZE];
         snprintf(welcome, BUFFER_SIZE, "SYS$Hi %s, you have successfully connected to the chat\n", payload);
         udp_socket_write(sd, &client_addr, welcome, BUFFER_SIZE);
+
+        // Send last 15 messages to the new client
+        history_send_to_client(sd, &client_addr);
 
         // Notify others
         char announce[BUFFER_SIZE];
