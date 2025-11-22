@@ -3,9 +3,12 @@
 #include <string.h>
 #include <assert.h>
 #include <pthread.h>
+#include <ncurses.h> // For UI
 #include "udp.h"
 
 #define CLIENT_PORT 55555
+WINDOW *chat_win;
+WINDOW *input_win;
 
     struct sender_args {
         int sd;
@@ -25,8 +28,10 @@ void *listener_thread(void *arg)
         if (rc > 0)
         {
             buffer[rc] = '\0';
-            printf("%s\n", buffer);
-            fflush(stdout);
+            wprintw(chat_win, "%s\n", buffer);
+            wrefresh(chat_win);
+
+            wrefresh(input_win);
         }
     }
     return NULL;
@@ -46,8 +51,8 @@ void *sender_thread(void *arg)
     while (1)
     {
         // Read input from user
-        if (fgets(client_request, BUFFER_SIZE, stdin) == NULL)
-            continue;
+        wgetnstr(input_win, client_request, BUFFER_SIZE);
+
 
         client_request[strcspn(client_request, "\n")] = '\0';
 
@@ -56,6 +61,10 @@ void *sender_thread(void *arg)
 
         // Send the raw request to the server
         udp_socket_write(sd, &server_addr, client_request, strlen(client_request));
+
+        wclear(input_win);
+        mvwprintw(input_win, 0, 0, "> ");
+        wrefresh(input_win);
 
         // If the user typed disconn$, quit the client
         if (strncmp(client_request, "disconn$", 8) == 0)
@@ -83,6 +92,25 @@ int main(int argc, char *argv[])
     args.sd = sd;
     args.addr = server_addr;
 
+    initscr();
+    cbreak();
+    noecho();
+    curs_set(1);
+
+    int rows, cols;
+    getmaxyx(stdscr, rows, cols);
+
+    chat_win = newwin(rows - 1, cols, 0, 0);
+    scrollok(chat_win, TRUE);
+    input_win = newwin(1, cols, rows - 1, 0);
+    wprintw(input_win, "> ");
+    wrefresh(input_win);
+
+    keypad(input_win, TRUE);
+    wmove(input_win, 0, 2);  
+    echo();                  
+
+
     pthread_create(&listener, NULL, listener_thread, &sd);
 
     pthread_create(&sender, NULL, sender_thread, &args);
@@ -90,6 +118,6 @@ int main(int argc, char *argv[])
     pthread_join(listener, NULL);
     pthread_join(sender, NULL);
 
- 
+    endwin();
     return 0;
 }
