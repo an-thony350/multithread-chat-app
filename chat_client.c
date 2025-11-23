@@ -161,7 +161,15 @@ void redraw_pad() {
 
 int main(int argc, char *argv[])
 {
-    int sd = udp_socket_open(CLIENT_PORT);
+    int is_admin = 0;
+
+    if (argc > 1 && strcmp(argv[1], "--admin") == 0) {
+        is_admin = 1;
+    }
+    
+    int port_to_use = is_admin ? 6666 : CLIENT_PORT;
+    int sd = udp_socket_open(port_to_use);
+
     struct sockaddr_in server_addr;
     
     assert(sd > -1);
