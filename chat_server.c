@@ -16,11 +16,13 @@
 #define PING_TIMEOUT 20 // seconds
 #define MONITOR_INTERVAL 10 // seconds
 
+// Message history buffer
 static char history[HISTORY_SIZE][BUFFER_SIZE];
 static int history_count = 0;
 static int history_start = 0;
 static pthread_mutex_t history_lock = PTHREAD_MUTEX_INITIALIZER;
 
+// Forward declarations
 static void history_add(const char *msg);
 static void history_send_to_client(int sd, struct sockaddr_in *addr);
 
@@ -41,7 +43,7 @@ typedef struct {
 static Client clients[MAX_CLIENTS];
 static pthread_rwlock_t clients_lock = PTHREAD_RWLOCK_INITIALIZER;
 
-// Utility helpers 
+// UTILITY HELPERS 
 
 //Compare two sockaddr_in for equality (IP + port) 
 static int sockaddrs_equal(const struct sockaddr_in *a, const struct sockaddr_in *b) {
@@ -84,7 +86,7 @@ static int add_client(const char *name, const struct sockaddr_in *addr) {
             return i;
         }
     }
-    return -1; 
+    return -1; //table full
 }
 
 // Remove client by index (assumes caller holds write lock) 
@@ -118,7 +120,6 @@ static int remove_muted(int idx, const char *target) {
         if (strcmp(clients[idx].muted[i], target) == 0) { found = i; break; }
     }
     if (found == -1) return -1;
-    // shift left
     for (int i = found; i < clients[idx].muted_count - 1; ++i) {
         strncpy(clients[idx].muted[i], clients[idx].muted[i+1], MAX_NAME_LEN);
     }
@@ -136,8 +137,7 @@ static int recipient_has_muted_sender(int recipient_idx, const char *sender_name
     return 0;
 }
 
-// Broadcast message to all clients (skip optional skip_idx, if >=0) 
-// Uses udp_socket_write(sd, &client.addr, ...) to send 
+// Broadcast message to all clients 
 static void broadcast_all(int sd, const char *msg, int skip_idx) {
     history_add(msg);
     pthread_rwlock_rdlock(&clients_lock);
@@ -149,7 +149,7 @@ static void broadcast_all(int sd, const char *msg, int skip_idx) {
     pthread_rwlock_unlock(&clients_lock);
 }
 
-// Broadcast sender's message to all clients except those who muted the sender 
+// Broadcast sender's message respecting mute lists
 static void broadcast_from_sender(int sd, int sender_idx, const char *msg) {
     if (sender_idx < 0 || sender_idx >= MAX_CLIENTS) return;
     char sender_name[MAX_NAME_LEN];
@@ -663,7 +663,7 @@ static void *monitor_thread(void *v) {
                     continue;
                 }
 
-                // Save info BEFORE removal
+                // Save info before removal
                 struct sockaddr_in kicked_addr = clients[target_idx].addr;
 
                 char removed_name[MAX_NAME_LEN];

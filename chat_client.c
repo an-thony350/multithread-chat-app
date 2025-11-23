@@ -3,10 +3,11 @@
 #include <string.h>
 #include <assert.h>
 #include <pthread.h>
-#include <ncurses.h> // For UI
+#include <ncurses.h> // Terminal UI
 #include "udp.h"
 
 #define CLIENT_PORT 55555
+
 WINDOW *chat_pad;
 WINDOW *input_win;
 
@@ -16,13 +17,13 @@ volatile int should_exit = 0;
 
 void redraw_pad();
 
+// Structure to pass arguments to sender thread
+struct sender_args {
+    int sd;
+    struct sockaddr_in addr;
+};
 
-    struct sender_args {
-        int sd;
-        struct sockaddr_in addr;
-    };
-
-// Listener Thread Function
+// Thread that listens to incoming messages from server
 void *listener_thread(void *arg)
 {
     int sd = *(int *)arg;
@@ -37,11 +38,14 @@ void *listener_thread(void *arg)
         if (rc > 0)
         {
             buffer[rc] = '\0';
+            // Append message to chat pad
             mvwprintw(chat_pad, chat_lines++, 0, "%s", buffer);
 
             int rows, cols;
             getmaxyx(stdscr, rows, cols);
 
+            // Refresh visible portion of chat pad
+            // If message exceeds visible area, show the bottom part
             pnoutrefresh(
                 chat_pad, 
                 (chat_lines > rows - 2 ? chat_lines - (rows - 2) : 0), 
@@ -49,14 +53,14 @@ void *listener_thread(void *arg)
                 0, 0, 
                 rows - 3, cols - 1
             );
-
+            // Refresh input window to prevent overlap
             wrefresh(input_win);
         }
     }
     return NULL;
 }
 
-// Sender Thread Function
+// Thread that handles user input and sends messages
 void *sender_thread(void *arg)
 {
 
@@ -76,13 +80,14 @@ void *sender_thread(void *arg)
         
         while ((ch = wgetch(input_win)))
         {
+            // Handles special keys
             if (ch == KEY_RESIZE || 
                 ch == KEY_MOUSE ||
                 ch == ERR) 
             {
                 continue;
             }
-            
+            // Scroll chat pad
             if (ch == KEY_DOWN) {
                 if (scroll_offset > 0) 
                 scroll_offset--;
@@ -97,7 +102,7 @@ void *sender_thread(void *arg)
                 continue;
             }
             if (ch == '\n') break;
-
+            // Handles backspace
             if (ch == KEY_BACKSPACE || ch == 127) {
                 if (input_pos > 0) {
                     input_pos--;
@@ -109,7 +114,7 @@ void *sender_thread(void *arg)
                 wrefresh(input_win);
                 continue;
             }
-
+            // Append normal characters
             if (input_pos < BUFFER_SIZE - 1) {
                 client_request[input_pos++] = ch;
                 client_request[input_pos] = '\0';
@@ -131,7 +136,7 @@ void *sender_thread(void *arg)
         mvwprintw(input_win, 0, 0, "> ");
         wrefresh(input_win);
 
-        // If the user typed disconn$, quit the client
+        // Quit client on request
         if (strncmp(client_request, "disconn$", 8) == 0)
         {
             should_exit = 1;
@@ -142,6 +147,7 @@ void *sender_thread(void *arg)
     return NULL;
 }
 
+// Refresh visible portion of chat pad
 void redraw_pad() {
     int rows, cols;
     getmaxyx(stdscr, rows, cols);
@@ -161,6 +167,7 @@ void redraw_pad() {
 
 int main(int argc, char *argv[])
 {
+    // Check if admin mode
     int is_admin = 0;
 
     if (argc > 1 && strcmp(argv[1], "--admin") == 0) {
@@ -183,6 +190,7 @@ int main(int argc, char *argv[])
     args.sd = sd;
     args.addr = server_addr;
 
+    // Init terminal UI
     initscr();
     mousemask(ALL_MOUSE_EVENTS, NULL);
     cbreak();
@@ -192,7 +200,7 @@ int main(int argc, char *argv[])
     int rows, cols;
     getmaxyx(stdscr, rows, cols);
 
-    chat_pad = newpad(5000, cols);  // 5000 lines buffer (increase anytime)
+    chat_pad = newpad(5000, cols);  // 5000 lines buffer 
     scrollok(chat_pad, TRUE);
 
     input_win = newwin(1, cols, rows - 1, 0);
