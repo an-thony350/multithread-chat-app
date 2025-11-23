@@ -60,7 +60,6 @@ void *listener_thread(void *arg)
 void *sender_thread(void *arg)
 {
 
-
     struct sender_args *args = arg;
 
     int sd = args->sd;
@@ -77,6 +76,13 @@ void *sender_thread(void *arg)
         
         while ((ch = wgetch(input_win)))
         {
+            if (ch == KEY_RESIZE || 
+                ch == KEY_MOUSE ||
+                ch == ERR) 
+            {
+                continue;
+            }
+            
             if (ch == KEY_DOWN) {
                 if (scroll_offset > 0) 
                 scroll_offset--;
@@ -110,22 +116,6 @@ void *sender_thread(void *arg)
                 wclrtoeol(input_win);
                 wrefresh(input_win);
             }
-            if (ch == KEY_MOUSE) {
-                MEVENT event;
-                if (getmouse(&event) == OK) {
-                    if (event.bstate & BUTTON5_PRESSED) {
-                        if (scroll_offset > 0) 
-                        scroll_offset--;
-                        redraw_pad();
-                    } else if (event.bstate & BUTTON4_PRESSED) {
-                        if (scroll_offset < chat_lines) 
-                        scroll_offset++;
-                        redraw_pad();
-                    }
-                }
-            }
-
-
         }
 
 
