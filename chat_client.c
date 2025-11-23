@@ -38,11 +38,21 @@ void *listener_thread(void *arg)
         if (rc > 0)
         {
             buffer[rc] = '\0';
+            
+            // Generate timestamp 
+            time_t t = time(NULL);
+            struct tm *tm_info = localtime(&t);
+            char timestamp[16];
+            strftime(timestamp, sizeof(timestamp), "[%H:%M]", tm_info);
+
+            int line = chat_lines;
             // Append message to chat pad
             mvwprintw(chat_pad, chat_lines++, 0, "%s", buffer);
 
             int rows, cols;
             getmaxyx(stdscr, rows, cols);
+
+            mvwprintw(chat_pad, line , cols - (int)strlen(timestamp) - 1, "%s", timestamp);
 
             // Refresh visible portion of chat pad
             // If message exceeds visible area, show the bottom part
