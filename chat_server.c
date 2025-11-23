@@ -5,12 +5,16 @@
 #include <assert.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <time.h>
 #include "udp.h"
 
 #define MAX_CLIENTS 128
 #define MAX_NAME_LEN 64
 #define MAX_MUTE 64
 #define HISTORY_SIZE 15
+#define INACTIVITY_THRESHOLD 30 // seconds
+#define PING_TIMEOUT 5 // seconds
+#define MONITOR_INTERVAL 10 // seconds
 
 static char history[HISTORY_SIZE][BUFFER_SIZE];
 static int history_count = 0;
@@ -27,6 +31,10 @@ typedef struct {
     struct sockaddr_in addr;             
     char muted[MAX_MUTE][MAX_NAME_LEN]; 
     int muted_count;
+
+    time_t last_active;               
+    int ping_sent;
+    time_t ping_time;
 } Client;
 
 // Global client table + lock protecting it
@@ -70,6 +78,9 @@ static int add_client(const char *name, const struct sockaddr_in *addr) {
             clients[i].name[MAX_NAME_LEN - 1] = '\0';
             clients[i].addr = *addr;
             clients[i].muted_count = 0;
+            clients[i].last_active = time(NULL);
+            clients[i].ping_sent = 0;
+            clients[i].ping_time = 0;
             return i;
         }
     }
@@ -244,17 +255,31 @@ static void *request_handler(void *v) {
         udp_socket_write(sd, &client_addr, err, BUFFER_SIZE);
         return NULL;
     }
+
     *d = '\0';
     char *type = buf;
     char *payload = d + 1;
+    
     trim_spaces(type);
     trim_spaces(payload);
 
+        if (strcmp(type, "ret-ping") == 0){
+        return NULL;
+    }
 
     // Identify sender index (if exists)
     pthread_rwlock_rdlock(&clients_lock);
     int sender_idx = find_client_by_addr(&client_addr);
     pthread_rwlock_unlock(&clients_lock);
+
+    if (sender_idx != -1) {
+        // update last active time
+        pthread_rwlock_wrlock(&clients_lock);
+        clients[sender_idx].last_active = time(NULL);
+        clients[sender_idx].ping_sent = 0; 
+        clients[sender_idx].ping_time = 0;
+        pthread_rwlock_unlock(&clients_lock);
+    }
 
     // Handle conn$name
     if (strcmp(type, "conn") == 0) {
@@ -573,6 +598,105 @@ static void *request_handler(void *v) {
     return NULL;
 }
 
+static void *monitor_thread(void *v) {
+    int sd = *(int *)v;
+
+    while (1) {
+        sleep(MONITOR_INTERVAL);
+        time_t now = time(NULL);
+
+        int target_idx = -1;
+        time_t oldest = now;
+
+        // Find the least recently active client
+        pthread_rwlock_rdlock(&clients_lock);
+        for (int i = 0; i < MAX_CLIENTS; ++i) {
+            if (!clients[i].active) continue;
+            if (clients[i].last_active <= oldest) {
+                oldest = clients[i].last_active;
+                target_idx = i;
+            }
+        }
+        pthread_rwlock_unlock(&clients_lock);
+
+        if (target_idx == -1) 
+            continue;   // no active clients
+
+        // Has the client reached inactivity threshold?
+        if ((now - oldest) >= INACTIVITY_THRESHOLD) {
+
+            pthread_rwlock_wrlock(&clients_lock);
+
+            if (!clients[target_idx].active) {
+                pthread_rwlock_unlock(&clients_lock);
+                continue;
+            }
+
+            // If no ping sent yet, send one
+            if (clients[target_idx].ping_sent == 0) {
+
+                clients[target_idx].ping_sent = 1;
+                clients[target_idx].ping_time = now;
+
+                struct sockaddr_in target_addr = clients[target_idx].addr;
+
+                pthread_rwlock_unlock(&clients_lock);
+
+                char ping_msg[BUFFER_SIZE];
+                snprintf(ping_msg, BUFFER_SIZE, "ping$");
+                udp_socket_write(sd, &target_addr, ping_msg, BUFFER_SIZE);
+
+                continue;
+            }
+
+            // Ping was sent before — check if timeout has passed
+            time_t ptime = clients[target_idx].ping_time;
+
+            pthread_rwlock_unlock(&clients_lock);
+
+            if ((now - ptime) >= PING_TIMEOUT) {
+
+                pthread_rwlock_wrlock(&clients_lock);
+
+                if (!clients[target_idx].active) {
+                    pthread_rwlock_unlock(&clients_lock);
+                    continue;
+                }
+
+                // Save info BEFORE removal
+                struct sockaddr_in kicked_addr = clients[target_idx].addr;
+
+                char removed_name[MAX_NAME_LEN];
+                strncpy(removed_name, clients[target_idx].name, MAX_NAME_LEN);
+                removed_name[MAX_NAME_LEN - 1] = '\0';
+
+                // Remove client
+                remove_client_by_index(target_idx);
+
+                pthread_rwlock_unlock(&clients_lock);
+
+                // Notify removed client
+                char notify_target[BUFFER_SIZE];
+                snprintf(notify_target, BUFFER_SIZE,
+                         "SYS$You have been disconnected due to inactivity\n");
+                udp_socket_write(sd, &kicked_addr, notify_target, BUFFER_SIZE);
+
+                // Notify everyone else
+                char announce[BUFFER_SIZE];
+                snprintf(announce, BUFFER_SIZE,
+                         "SYS$%s has been disconnected due to inactivity\n",
+                         removed_name);
+                broadcast_all(sd, announce, -1);
+
+                continue;
+            }
+        }
+    }
+
+    return NULL;
+}
+
+
 // Main Server Loop
 int main(int argc, char *argv[]) {
     // open UDP socket bound to SERVER_PORT
@@ -584,6 +708,13 @@ int main(int argc, char *argv[]) {
 
     // Zero client table
     memset(clients, 0, sizeof(clients));
+
+    // Start monitor thread
+    pthread_t monitor_tid;
+    if (pthread_create(&monitor_tid, NULL, monitor_thread, &sd) != 0) {
+        perror("pthread_create");
+    }
+    pthread_detach(monitor_tid);
 
     while (1) {
         struct sockaddr_in client_addr;
