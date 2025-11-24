@@ -144,7 +144,7 @@ static void broadcast_all(int sd, const char *msg, int skip_idx) {
     for (int i = 0; i < MAX_CLIENTS; ++i) {
         if (!clients[i].active) continue;
         if (i == skip_idx) continue;
-        udp_socket_write(sd, &clients[i].addr, msg, BUFFER_SIZE);
+        udp_socket_write(sd, &clients[i].addr, msg, strlen(msg));
     }
     pthread_rwlock_unlock(&clients_lock);
 }
@@ -163,7 +163,7 @@ static void broadcast_from_sender(int sd, int sender_idx, const char *msg) {
         if (!clients[i].active) continue;
         if (i == sender_idx) continue;
         if (recipient_has_muted_sender(i, sender_name)) continue;
-        udp_socket_write(sd, &clients[i].addr, msg, BUFFER_SIZE);
+        udp_socket_write(sd, &clients[i].addr, msg, strlen(msg));
     }
     pthread_rwlock_unlock(&clients_lock);
 }
@@ -194,7 +194,7 @@ static void history_send_to_client(int sd, struct sockaddr_in *addr) {
         int index = (history_start + i) % HISTORY_SIZE;
         char wrapped[BUFFER_SIZE];
         snprintf(wrapped, BUFFER_SIZE, "[History] %s", history[index]);
-        udp_socket_write(sd, addr, wrapped, BUFFER_SIZE); 
+        udp_socket_write(sd, addr, wrapped, strlen(wrapped)); 
     }
 
     pthread_mutex_unlock(&history_lock);
@@ -254,7 +254,7 @@ static void *request_handler(void *v) {
         // malformed request
         char err[BUFFER_SIZE];
         snprintf(err, BUFFER_SIZE, "ERR$Malformed request (no $): %s\n", buf);
-        udp_socket_write(sd, &client_addr, err, BUFFER_SIZE);
+        udp_socket_write(sd, &client_addr, err, strlen(err));
         return NULL;
     }
 
@@ -289,7 +289,7 @@ static void *request_handler(void *v) {
         if (payload == NULL || strlen(payload) == 0) {
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "ERR$Name cannot be empty\n");
-            udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+            udp_socket_write(sd, &client_addr, resp, strlen(resp));
             return NULL;
         }
 
@@ -303,7 +303,7 @@ static void *request_handler(void *v) {
                 pthread_rwlock_unlock(&clients_lock);
                 char resp[BUFFER_SIZE];
                 snprintf(resp, BUFFER_SIZE, "ERR$Name '%s' already in use\n", payload);
-                udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+                udp_socket_write(sd, &client_addr, resp, strlen(resp));
                 return NULL;
             }
             strncpy(clients[existing].name, payload, MAX_NAME_LEN - 1);
@@ -316,7 +316,7 @@ static void *request_handler(void *v) {
                 pthread_rwlock_unlock(&clients_lock);
                 char resp[BUFFER_SIZE];
                 snprintf(resp, BUFFER_SIZE, "ERR$Name '%s' already in use\n", payload);
-                udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+                udp_socket_write(sd, &client_addr, resp, strlen(resp));
                 return NULL;
             }
             // add client
@@ -325,7 +325,7 @@ static void *request_handler(void *v) {
                 pthread_rwlock_unlock(&clients_lock);
                 char resp[BUFFER_SIZE];
                 snprintf(resp, BUFFER_SIZE, "ERR$Server full or name taken\n");
-                udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+                udp_socket_write(sd, &client_addr, resp, strlen(resp));
                 return NULL;
             }
             sender_idx = idx;
@@ -335,7 +335,7 @@ static void *request_handler(void *v) {
         // Send confirmation to new client
         char welcome[BUFFER_SIZE];
         snprintf(welcome, BUFFER_SIZE, "SYS$Hi %s, you have successfully connected to the chat\n", payload);
-        udp_socket_write(sd, &client_addr, welcome, BUFFER_SIZE);
+        udp_socket_write(sd, &client_addr, welcome, strlen(welcome));
 
         // Send last 15 messages to the new client
         history_send_to_client(sd, &client_addr);
@@ -354,7 +354,7 @@ static void *request_handler(void *v) {
             // sender not registered
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "ERR$You must conn$<name> before sending messages\n");
-            udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+            udp_socket_write(sd, &client_addr, resp, strlen(resp));
             return NULL;
         }
         // compose message: "Alice: Hello"
@@ -372,7 +372,7 @@ static void *request_handler(void *v) {
         if (sender_idx == -1) {
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "ERR$You must conn$<name> before sending messages\n");
-            udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+            udp_socket_write(sd, &client_addr, resp, strlen(resp));
             return NULL;
         }
         // payload expected: "recipient message..."
@@ -382,7 +382,7 @@ static void *request_handler(void *v) {
         if (!recipient || strlen(recipient) == 0) {
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "ERR$sayto requires a recipient name and a message\n");
-            udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+            udp_socket_write(sd, &client_addr, resp, strlen(resp));
             return NULL;
         }
         int recv_idx;
@@ -392,7 +392,7 @@ static void *request_handler(void *v) {
         if (recv_idx == -1) {
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "ERR$Recipient '%s' not found\n", recipient);
-            udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+            udp_socket_write(sd, &client_addr, resp, strlen(resp));
             return NULL;
         }
         // check if recipient muted sender
@@ -403,7 +403,7 @@ static void *request_handler(void *v) {
             // act as if delivered silently (or optionally notify sender)
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "SYS$Your message could not be delivered (you are muted by %s)\n", recipient);
-            udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+            udp_socket_write(sd, &client_addr, resp, strlen(resp));
             return NULL;
         }
         // send private message formatted: "Alice: hi\n"
@@ -412,11 +412,11 @@ static void *request_handler(void *v) {
             snprintf(out, BUFFER_SIZE, "%s (private): %s\n", clients[sender_idx].name, msg_rest);
         else
             snprintf(out, BUFFER_SIZE, "%s (private): \n", clients[sender_idx].name);
-        udp_socket_write(sd, &clients[recv_idx].addr, out, BUFFER_SIZE);
+        udp_socket_write(sd, &clients[recv_idx].addr, out, strlen(out));
         // optionally ack sender
         char ack[BUFFER_SIZE];
         snprintf(ack, BUFFER_SIZE, "SYS$Message delivered to %s\n", recipient);
-        udp_socket_write(sd, &client_addr, ack, BUFFER_SIZE);
+        udp_socket_write(sd, &client_addr, ack, strlen(ack));
 
         return NULL;
     }
@@ -426,13 +426,13 @@ static void *request_handler(void *v) {
         if (sender_idx == -1) {
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "ERR$You must conn$<name> before muting users\n");
-            udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+            udp_socket_write(sd, &client_addr, resp, strlen(resp));
             return NULL;
         }
         if (payload == NULL || strlen(payload) == 0) {
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "ERR$mute requires a client name\n");
-            udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+            udp_socket_write(sd, &client_addr, resp, strlen(resp));
             return NULL;
         }
         pthread_rwlock_wrlock(&clients_lock);
@@ -441,11 +441,11 @@ static void *request_handler(void *v) {
         if (res == 0) {
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "SYS$You have muted %s\n", payload);
-            udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+            udp_socket_write(sd, &client_addr, resp, strlen(resp));
         } else {
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "ERR$Unable to mute %s (maybe full list)\n", payload);
-            udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+            udp_socket_write(sd, &client_addr, resp, strlen(resp));
         }
         return NULL;
     }
@@ -455,13 +455,13 @@ static void *request_handler(void *v) {
         if (sender_idx == -1) {
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "ERR$You must conn$<name> before unmuting users\n");
-            udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+            udp_socket_write(sd, &client_addr, resp, strlen(resp));
             return NULL;
         }
         if (payload == NULL || strlen(payload) == 0) {
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "ERR$unmute requires a client name\n");
-            udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+            udp_socket_write(sd, &client_addr, resp, strlen(resp));
             return NULL;
         }
         pthread_rwlock_wrlock(&clients_lock);
@@ -470,11 +470,11 @@ static void *request_handler(void *v) {
         if (res == 0) {
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "SYS$You have unmuted %s\n", payload);
-            udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+            udp_socket_write(sd, &client_addr, resp, strlen(resp));
         } else {
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "ERR$%s was not muted\n", payload);
-            udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+            udp_socket_write(sd, &client_addr, resp, strlen(resp));
         }
         return NULL;
     }
@@ -484,13 +484,13 @@ static void *request_handler(void *v) {
         if (sender_idx == -1) {
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "ERR$You must conn$<name> before renaming\n");
-            udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+            udp_socket_write(sd, &client_addr, resp, strlen(resp));
             return NULL;
         }
         if (payload == NULL || strlen(payload) == 0) {
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "ERR$rename requires a new name\n");
-            udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+            udp_socket_write(sd, &client_addr, resp, strlen(resp));
             return NULL;
         }
         pthread_rwlock_wrlock(&clients_lock);
@@ -499,7 +499,7 @@ static void *request_handler(void *v) {
             pthread_rwlock_unlock(&clients_lock);
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "ERR$Name '%s' already in use\n", payload);
-            udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+            udp_socket_write(sd, &client_addr, resp, strlen(resp));
             return NULL;
         }
         char old_name[MAX_NAME_LEN];
@@ -510,7 +510,7 @@ static void *request_handler(void *v) {
 
         char resp[BUFFER_SIZE];
         snprintf(resp, BUFFER_SIZE, "SYS$You are now known as %s\n", payload);
-        udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+        udp_socket_write(sd, &client_addr, resp, strlen(resp));
 
         // broadcast rename to others
         char announce[BUFFER_SIZE];
@@ -526,7 +526,7 @@ static void *request_handler(void *v) {
             // might be not registered, but still reply
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "SYS$You are not connected\n");
-            udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+            udp_socket_write(sd, &client_addr, resp, strlen(resp));
             return NULL;
         }
         // remember name to broadcast
@@ -538,7 +538,7 @@ static void *request_handler(void *v) {
 
         char resp[BUFFER_SIZE];
         snprintf(resp, BUFFER_SIZE, "SYS$Disconnected. Bye!\n");
-        udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+        udp_socket_write(sd, &client_addr, resp, strlen(resp));
 
         char announce[BUFFER_SIZE];
         snprintf(announce, BUFFER_SIZE, "SYS$%s has left the chat\n", namebuf);
@@ -553,13 +553,13 @@ static void *request_handler(void *v) {
         if (requester_port != 6666) {
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "ERR$kick is admin-only\n");
-            udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+            udp_socket_write(sd, &client_addr, resp, strlen(resp));
             return NULL;
         }
         if (payload == NULL || strlen(payload) == 0) {
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "ERR$kick requires a client name\n");
-            udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+            udp_socket_write(sd, &client_addr, resp, strlen(resp));
             return NULL;
         }
         pthread_rwlock_wrlock(&clients_lock);
@@ -568,13 +568,13 @@ static void *request_handler(void *v) {
             pthread_rwlock_unlock(&clients_lock);
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "ERR$Client '%s' not found\n", payload);
-            udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+            udp_socket_write(sd, &client_addr, resp, strlen(resp));
             return NULL;
         }
         // send removal message to target
         char notify_target[BUFFER_SIZE];
         snprintf(notify_target, BUFFER_SIZE, "SYS$You have been removed from the chat\n");
-        udp_socket_write(sd, &clients[target_idx].addr, notify_target, BUFFER_SIZE);
+        udp_socket_write(sd, &clients[target_idx].addr, notify_target, strlen(notify_target));
 
         // remember name then remove
         char removed_name[MAX_NAME_LEN];
@@ -594,7 +594,7 @@ static void *request_handler(void *v) {
     {
         char resp[BUFFER_SIZE];
         snprintf(resp, BUFFER_SIZE, "ERR$Unknown command '%s'\n", type);
-        udp_socket_write(sd, &client_addr, resp, BUFFER_SIZE);
+        udp_socket_write(sd, &client_addr, resp, strlen(resp));
     }
 
     return NULL;
@@ -646,7 +646,7 @@ static void *monitor_thread(void *v) {
 
                 char ping_msg[BUFFER_SIZE];
                 snprintf(ping_msg, BUFFER_SIZE, "ping$");
-                udp_socket_write(sd, &target_addr, ping_msg, BUFFER_SIZE);
+                udp_socket_write(sd, &target_addr, ping_msg, strlen(ping_msg));
 
                 continue;
             }
@@ -681,7 +681,7 @@ static void *monitor_thread(void *v) {
                 char notify_target[BUFFER_SIZE];
                 snprintf(notify_target, BUFFER_SIZE,
                          "SYS$You have been disconnected due to inactivity\n");
-                udp_socket_write(sd, &kicked_addr, notify_target, BUFFER_SIZE);
+                udp_socket_write(sd, &kicked_addr, notify_target, strlen(notify_target));
 
                 // Notify everyone else
                 char announce[BUFFER_SIZE];
