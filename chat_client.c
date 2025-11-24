@@ -46,13 +46,22 @@ void *listener_thread(void *arg)
             strftime(timestamp, sizeof(timestamp), "[%H:%M]", tm_info);
 
             int line = chat_lines;
-            // Append message to chat pad
-            mvwprintw(chat_pad, chat_lines++, 0, "%s", buffer);
+            // Check for history prefix
+            int is_history = 0;
+            char *msg_text = buffer;
 
+            if (strncmp(buffer, "[History]", 10) == 0) {
+                is_history = 1;
+                msg_text = buffer + 10; // skip "[History]"
+            }
+
+            mvwprintw(chat_pad, chat_lines++, 0, "%s", msg_text);
+    
+            // Print timestamp flush right
             int rows, cols;
             getmaxyx(stdscr, rows, cols);
+            mvwprintw(chat_pad, chat_lines - 1, cols - (int)strlen(timestamp) - 1, "%s", timestamp);
 
-            mvwprintw(chat_pad, line , cols - (int)strlen(timestamp) - 1, "%s", timestamp);
 
             // Refresh visible portion of chat pad
             // If message exceeds visible area, show the bottom part

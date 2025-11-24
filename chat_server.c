@@ -192,7 +192,9 @@ static void history_send_to_client(int sd, struct sockaddr_in *addr) {
 
     for (int i = 0; i < history_count; i++) {
         int index = (history_start + i) % HISTORY_SIZE;
-        udp_socket_write(sd, addr, history[index], BUFFER_SIZE);
+        char wrapped[BUFFER_SIZE];
+        snprintf(wrapped, BUFFER_SIZE, "[History] %s", history[index]);
+        udp_socket_write(sd, addr, wrapped, BUFFER_SIZE); 
     }
 
     pthread_mutex_unlock(&history_lock);
