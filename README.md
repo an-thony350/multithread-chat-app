@@ -145,7 +145,3 @@ History messages are displayed as received; the client adds a `[HH:MM]` timestam
 - Message framing is simple `\0` terminated strings — consider adding message length fields or structured frames if you need robustness across lossy networks.
 - The client UI uses a fixed pad size (5000 lines); consider switching to a dynamic buffer or file-backed history for long-running sessions.
 
-If you want, I can also:
-- add a small `README` section describing the `udp.h` API used by these programs,
-- add a small test harness to exercise history delivery (automated), or
-- create a systemd unit / supervisord config for running the server persistently.
