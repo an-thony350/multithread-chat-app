@@ -1,147 +1,223 @@
-# Multithread Chat Application
+# Multithreaded Chat Application — Implementation Notes
 
-A feature-rich UDP-based chat application built in C with multithreading support. This project demonstrates concurrent programming concepts including thread management, synchronization primitives, client-server architecture, and ncurses UI development.
+> This README documents how the current repository implements the assignment requirements.
+> It focuses on design choices, data structures, threads, synchronization, and how features (including both PEs) are realized in the provided sources: `chat_server.c`, `chat_client.c`, and `udp.h`.
 
-## Overview
+## Contents
+- [High-level summary](#high-level-summary)
+- [Server implementation (`chat_server.c`)](#server-implementation-chat_serverc)
+  - [Client record and storage](#client-record-and-storage)
+  - [Networking and worker model](#networking-and-worker-model)
+  - [Broadcasting, private messages, and mute handling](#broadcasting-private-messages-and-mute-handling)
+  - [History buffer (PE 1)](#history-buffer-pe-1)
+  - [Inactivity monitor (PE 2)](#inactivity-monitor-pe-2)
+  - [Synchronization strategy](#synchronization-strategy)
+  - [Admin/kick behavior](#adminkick-behavior)
+- [Client implementation (`chat_client.c`)](#client-implementation-chat_clientc)
+  - [UI and threads](#ui-and-threads)
+  - [Message handling and history markers](#message-handling-and-history-markers)
+  - [Admin mode and ports](#admin-mode-and-ports)
+- [Build & Run (exact flags used)](#build--run-exact-flags-used)
+- [Usage examples and quick tests](#usage-examples-and-quick-tests)
+- [Notes, caveats, and suggestions](#notes-caveats-and-suggestions)
+- [Repository layout](#repository-layout)
 
-This chat system consists of two main components:
+---
 
-- **Server** (`chat_server.c`): A multithreaded UDP server that manages connected clients, handles message routing, maintains user state, preserves message history, and monitors for inactive connections
-- **Client** (`chat_client.c`): A UDP client with dual-threaded architecture featuring an ncurses-based interactive UI for simultaneous sending and receiving
+## High-level summary
+- The server is UDP-based, listens on `SERVER_PORT` (12000 by assignment), uses a fixed-size client table (`MAX_CLIENTS`) and spawns a detached worker thread per incoming request.
+- The client is a terminal UI implemented with `ncurses`, spawns one sender thread and one listener thread, and sends raw requests like `type$payload` to the server.
+- Two proposed extensions are implemented:
+  - PE1: A circular history buffer of the last 15 broadcast messages; history is sent to new clients on `conn$`.
+  - PE2: An inactivity monitor thread periodically pings the least-recently-active client and removes it if it does not respond.
 
-The server uses read-write locks to safely manage a client table shared across multiple worker threads, while clients use separate threads for handling incoming messages and user input with a scrollable chat interface.
+---
 
-## Architecture
+## Server implementation (`chat_server.c`)
 
-### Server Architecture
+### Client record and storage
+- Type: `Client` struct holds:
+  - `active` flag
+  - `name` (string)
+  - `addr` (struct sockaddr_in)
+  - `muted` list (array of strings) and `muted_count`
+  - `last_active` timestamp (time_t)
+  - `ping_sent` and `ping_time` for inactivity handling
+- Storage: fixed-size array `clients[MAX_CLIENTS]` (simple contiguous table).
+  - Rationale: simple and deterministic. Table entry indices are used as client IDs internally.
 
-The server implements a **thread-per-request model with background monitoring**:
+### Networking and worker model
+- Main listener loop:
+  - Calls `udp_socket_read(sd, &client_addr, buf, BUFFER_SIZE)` to receive a datagram.
+  - For every valid incoming datagram, it allocates a `worker_arg_t`, copies the request and the client's address, and spawns a detached thread that runs `request_handler`.
+- `request_handler`:
+  - Parses messages of form `type$payload` (looks for `$` separator).
+  - Recognized types: `conn`, `say`, `sayto`, `mute`, `unmute`, `rename`, `disconn`, `kick`, and `ret-ping` (the ping reply handling is minimal).
+  - For malformed or unknown commands it replies with an `ERR$`-prefixed message.
 
-- **Main Loop**: Listens for incoming UDP packets and spawns a new worker thread for each request
-- **Global Client Table**: Maintains an array of up to 128 connected clients with their names, addresses, mute lists, and activity tracking
-- **Thread Safety**: All access to the client table is protected by a `pthread_rwlock_t` (read-write lock) to allow concurrent readers and exclusive writers
-- **Worker Threads**: Each request is handled by a dedicated thread that processes commands, updates client state, and broadcasts messages
-- **Message History**: Maintains a circular buffer of the last 15 messages sent to the chat
-- **Inactivity Monitor**: Background thread that tracks client activity and removes inactive clients after 10 minutes
-- **Ping System**: Sends keep-alive pings to inactive clients before removal; removes clients that don't respond within 20 seconds
+### Broadcasting, private messages, and mute handling
+- `broadcast_all(sd, msg, skip_idx)`:
+  - Writes the message to history then iterates active clients and uses `udp_socket_write` to send to each (skips `skip_idx` when provided).
+- `broadcast_from_sender(sd, sender_idx, msg)`:
+  - Respects recipients' mute lists by calling `recipient_has_muted_sender`.
+  - Does not deliver a sender's message to themselves.
+- Private messaging (`sayto`):
+  - The server parses the first token of `payload` as recipient name, finds recipient index via `find_client_by_name`, checks if recipient muted the sender, then sends a direct UDP message to the recipient and a `SYS$` ack to the sender.
 
-### Client Architecture
+### History buffer (PE 1)
+- Circular buffer implemented with:
+  - `history[HISTORY_SIZE][BUFFER_SIZE]`
+  - `history_start`, `history_count`
+  - Protected by `history_lock` (a pthread mutex).
+- On every broadcast, `history_add(msg)` appends to the circular buffer.
+- On successful `conn$` the server calls `history_send_to_client(sd, &client_addr)` to send each stored message prefixed with `[History] ` so the client can detect it and display accordingly.
 
-The client uses a **dual-threaded approach with ncurses UI**:
+### Inactivity monitor (PE 2)
+- Monitor thread (`monitor_thread`) runs periodically (interval `MONITOR_INTERVAL` seconds).
+- It finds the least-recently-active client by scanning `clients[]` under a read lock.
+- If inactivity exceeds `INACTIVITY_THRESHOLD`, it:
+  - Sends a `ping$` message to the selected client and marks `ping_sent` and `ping_time`.
+  - If a previous ping exists and `PING_TIMEOUT` elapses without activity (clients update `last_active` when they send any request), the monitor removes the client and broadcasts a disconnection message.
+- Ping replies: clients should reply with `ret-ping$` (the server accepts `ret-ping` but request handler currently returns early on `ret-ping` — presence of `ret-ping` resets last-active logic when the client is found).
 
-- **Main Thread**: Initializes the UDP socket, ncurses interface, and creates two worker threads
-- **Listener Thread**: Continuously reads incoming messages from the server and displays them in a scrollable chat window
-- **Sender Thread**: Reads user input from the input line and sends commands to the server
-# Multithread Chat Application
+### Synchronization strategy
+- `clients_lock` is a `pthread_rwlock_t`:
+  - Read lock (`pthread_rwlock_rdlock`) used for operations that only inspect the table (e.g., scanning for recipients for `sayto`, broadcasting).
+  - Write lock (`pthread_rwlock_wrlock`) used for modifications: `add_client`, `remove_client_by_index`, muting/unmuting, rename, updating `last_active`, and marking ping fields.
+- `history_lock` is a `pthread_mutex_t` guarding the circular history buffer.
+- Rationale: Reader–writer lock allows multiple concurrent reads (e.g., many broadcast/send ops) while serializing updates.
 
-A feature-rich UDP-based chat application written in C. It demonstrates multithreading, synchronization primitives, a small command protocol, an ncurses-based client UI, message history, and time-based inactivity monitoring.
+### Admin / kick
+- Admin client detection: server checks requester UDP port (`ntohs(client_addr.sin_port)`) and only accepts `kick$` from port `6666`.
+- Upon `kick$ name`, server:
+  - Finds target by name.
+  - Sends `SYS$You have been removed from the chat` to the target.
+  - Removes client from table and broadcasts `SYS$<name> has been removed...` to others.
 
-## Overview
+---
 
-This project contains two primary programs:
+## Client implementation (`chat_client.c`)
 
-- `chat_server.c` — a multithreaded UDP server that manages client state, enforces name uniqueness, preserves a short message history, and monitors inactive clients.
-- `chat_client.c` — an ncurses-backed client that runs two threads (listener + sender) for real-time send/receive and provides a scrollable chat UI. An `--admin` flag uses port `6666` and allows admin-only commands (e.g. `kick`).
+### UI and threads
+- Uses `ncurses` for terminal UI:
+  - `chat_pad`: large pad used as the scrollable message area (created with `newpad(5000, cols)`).
+  - `input_win`: single-line input window at the bottom for user typing.
+- Threads:
+  - `listener_thread(int *sd)`:
+    - Blocks on `udp_socket_read` to receive server messages.
+    - Adds each incoming line to `chat_pad` and stamps a local timestamp.
+    - Recognizes messages prefixed with `[History]` and handles them appropriately (keeps them in the pad like normal messages).
+  - `sender_thread(struct sender_args *args)`:
+    - Reads user input using `wgetch` on `input_win` and builds a request string.
+    - Sends the raw request string to server with `udp_socket_write`.
+    - Special behavior: when user types `disconn$` the sender sets `should_exit = 1` and returns, letting the program terminate.
+- Keyboard handling:
+  - Supports up/down keys to scroll chat pad (`KEY_UP`, `KEY_DOWN`).
+  - Handles backspace and line editing roughly (manual handling in loop).
+- Cursor and refresh logic ensure the pad and input area don't overlap.
 
-There is also a convenience script `compile.sh` that stops running instances and builds both binaries.
+### Message handling and history markers
+- On listening, when a message begins with "[History]", the client strips that marker for display (server prefixes history with `[History] ` when sending to newly connected clients).
+- Timestamps are added on the client side (the client formats a local time `[HH:MM]` and prints it right-aligned on the pad).
 
-## What changed (new/important behavior)
+### Admin mode and ports
+- By default the client binds to `CLIENT_PORT` defined as `55555` in the source.
+- Admin mode: if launched with `--admin` argument (`./chat_client --admin`) the client binds to port `6666`. This allows sending `kick$` commands accepted by the server as admin requests.
 
-- Message history: the server now stores the last 15 messages in a circular buffer and sends them to newly connected clients. History messages are prefixed with `[History] ` so the client can handle/display them specially.
-- Client timestamps: the ncurses client prepends a small timestamp (format `[HH:MM]`) to received messages and prints it right-aligned on the chat line.
-- Inactivity monitoring: a background monitor thread pings the least-recently-active client after 10 minutes of inactivity; if the client doesn't respond within 20 seconds it is removed and others are notified.
-- UDP sends: server `udp_socket_write()` calls now send only the used string length (i.e. `strlen(msg)`) rather than a fixed buffer size; this reduces unnecessary network traffic and avoids sending trailing garbage.
-- Compile helper: `compile.sh` kills any running `chat_server`/`chat_client`, removes old binaries, and re-compiles (server + client). The client link command includes `-lncurses`.
+---
 
-## Command protocol
+## Build & Run (exact flags used)
+- The server uses pthreads; the client uses `ncurses`. Build commands:
 
-All protocol messages use the simple `type$payload` format. Example:
-
-- `conn$Alice` — register the client name `Alice`
-- `say$Hello` — broadcast `Hello` to other clients
-- `sayto$Bob hi` — private message to `Bob` with payload `hi`
-- `mute$SpamBot`, `unmute$SpamBot`, `rename$NewName`, `disconn$`
-
-Internal messages:
-- `ping$` — server → client (keepalive)
-- `ret-ping$` — client → server (keeps client alive)
-
-Server responses use prefixes:
-- `SYS$...` — informational/system messages
-- `ERR$...` — error messages
-
-History messages are sent as: `[History] <original message>` so clients can optionally mark them.
-
-## Important implementation notes
-
-- The server stores client records with `last_active` timestamps and `ping_sent` flags. The monitor thread runs every `MONITOR_INTERVAL` seconds.
-- The server's history buffer is protected by a mutex (`history_lock`) and is safe for concurrent writes from multiple worker threads.
-- When broadcasting messages the server uses `udp_socket_write(sd, &addr, msg, strlen(msg))` (length = `strlen(msg)`).
-- The client displays messages in a large `newpad()` buffer (5,000 lines by default) and keeps an input window at the bottom. Messages include a timestamp inserted by the client when displaying received data.
-
-## Building
-
-You can build manually or use the helper script.
-
-Manual build:
 ```bash
-gcc -o chat_server chat_server.c udp.c -lpthread
-gcc -o chat_client chat_client.c udp.c -lpthread -lncurses
+# From repository root (multithread-chat-app/)
+gcc chat_server.c -o chat_server -lpthread
+gcc chat_client.c -o chat_client -lncurses
 ```
 
-Using the helper script (recommended during development):
-```bash
-./compile.sh
-```
-`compile.sh` will `pkill` existing processes, remove previous binaries and rebuild.
+- Note: both binaries also require `udp.h` at compile time (it's included by both sources).
+- Run server (foreground):
 
-## Running
-
-Start the server (default port comes from `udp.h`):
 ```bash
 ./chat_server
 ```
 
-Start a normal client:
+- Or background:
+
+```bash
+./chat_server &
+# record PID and kill when done:
+kill <PID>
+```
+
+- Run client (normal user):
+
 ```bash
 ./chat_client
 ```
 
-Start an admin client (binds to port 6666 and may execute `kick$`):
+- Run client (admin port 6666) to issue `kick$`:
+
 ```bash
 ./chat_client --admin
 ```
 
-On connect, the client should send `conn$YourName` to register. After that the client can `say$...`, `sayto$...`, etc.
+Troubleshooting:
+- If `ncurses` not installed, install it via your package manager (e.g., `sudo apt-get install libncurses5-dev libncursesw5-dev` on Debian/Ubuntu).
+- If ports are already in use, change `CLIENT_PORT` or ensure no other process bound to the same port.
 
-## UI controls (ncurses client)
+---
 
-- Up arrow / Down arrow: scroll chat history
-- Enter: send message / command typed in the input line
-- Backspace: delete character
-- Ctrl+C: exit client (also `disconn$` to leave gracefully)
+## Usage examples and how the protocol looks on-the-wire
+- Client sends plaintext UDP payloads of the form `type$payload`.
+- Examples:
+  - Connect: `conn$Alice`
+  - Broadcast: `say$Hello everyone!`
+  - Private: `sayto$Bob How are you?`
+  - Mute: `mute$Charlie`
+  - Unmute: `unmute$Charlie`
+  - Rename: `rename$Alice123`
+  - Disconnect: `disconn$`
+  - Admin kick: `kick$Bob` (only from port `6666`)
+- Server replies use simple prefixes:
+  - `SYS$` for system messages
+  - `ERR$` for errors
+  - Regular chat lines are plain text like `Alice: Hello everyone!`
 
-History messages are displayed as received; the client adds a `[HH:MM]` timestamp aligned to the right of each printed chat line.
+Quick test flow:
+1. Start server in one terminal: `./chat_server`
+2. Start client A: `./chat_client`
+3. Type: `conn$Alice` in client A.
+4. Start client B: `./chat_client`
+5. Type: `conn$Bob` in client B.
+6. From A: `say$Hi Bob!`
+7. From B: `sayto$Alice I see you` — server will deliver to Alice only.
 
-## Files of interest
+History test:
+- If several `say$` messages were already broadcast, starting a new client and sending `conn$NewUser` will cause the server to send the last up to 15 broadcast messages prefixed with `[History]`.
 
-- `chat_server.c` — server implementation (worker threads, monitor thread, history, mute lists)
-- `chat_client.c` — ncurses client (listener and sender threads, timestamping, scrollable pad)
-- `udp.h` / `udp.c` — small wrapper for UDP socket ops (open/read/write)
-- `compile.sh` — development helper script
-- `test_scripts/` — small test utilities (e.g., `test_history.py`) used while developing features
+Inactivity test:
+- If a client is idle for longer than `INACTIVITY_THRESHOLD`, the server will attempt a `ping$`. If no reply is received within `PING_TIMEOUT` seconds, the server removes the client.
 
-## Configuration constants (from source)
+---
 
-- `HISTORY_SIZE = 15` — number of messages preserved
-- `INACTIVITY_THRESHOLD = 600` — seconds (10 minutes)
-- `PING_TIMEOUT = 20` — seconds to wait for ping response
-- `MONITOR_INTERVAL = 10` — seconds between monitor checks
-- `MAX_CLIENTS = 128`, `MAX_NAME_LEN = 64`, `MAX_MUTE = 64`
+## Notes, caveats, and suggestions
+- UDP is used: packets may be lost or reordered. The server and client don't implement retransmission. For a production-grade system either implement ack/retry or switch to TCP.
+- The client currently binds to a fixed `CLIENT_PORT` (55555) unless `--admin` is used. For running multiple normal clients on same machine you will need to modify client code to use ephemeral ports (or allow port 0 and read assigned port), or run clients on separate machines.
+- `chat_pad` uses a fixed size (5000 lines). That is simple and acceptable for the assignment, but could be turned into dynamic allocation for long-running sessions.
+- Name uniqueness is enforced server-side: `conn$` fails if the requested name is already in use.
+- `ret-ping` handling in the server is minimal: the presence of `ret-ping` is recognized and ignored in `request_handler` (but the server updates `last_active` upon receiving any message from a known client, which implicitly handles ping replies).
+- Testing scripts in `test_scripts/` (if present) can be used to validate baseline behaviors — inspect them and adapt compilation flags if needed.
 
-## Notes, caveats and next steps
+---
 
-- The server relies on `udp.h` for port and buffer-size constants; verify `SERVER_PORT` / `BUFFER_SIZE` there when deploying.
-- Message framing is simple `\0` terminated strings — consider adding message length fields or structured frames if you need robustness across lossy networks.
-- The client UI uses a fixed pad size (5000 lines); consider switching to a dynamic buffer or file-backed history for long-running sessions.
+## Repository layout
+- `chat_server.c` — server (listener, worker threads, monitor thread, client table, history)
+- `chat_client.c` — client (ncurses UI, sender/listener threads)
+- `udp.h` — UDP helper wrappers and constants (used by both client and server)
+- `compile.sh` — optional helper script (if present)
+- `test_scripts/` — automated tests (optional)
+
+---
+
 

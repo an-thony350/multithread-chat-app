@@ -3,6 +3,7 @@
 #include <string.h>
 #include <assert.h>
 #include <pthread.h>
+#include <time.h>
 #include <ncurses.h> // Terminal UI
 #include "udp.h"
 
@@ -60,7 +61,7 @@ void *listener_thread(void *arg)
             // Print timestamp flush right
             int rows, cols;
             getmaxyx(stdscr, rows, cols);
-            mvwprintw(chat_pad, chat_lines - 1, cols - (int)strlen(timestamp) - 1, "%s", timestamp);
+            mvwprintw(chat_pad, chat_lines - 1, cols - (int)strlen(timestamp) - 2, "%s", timestamp);
 
 
             // Refresh visible portion of chat pad
@@ -211,7 +212,6 @@ int main(int argc, char *argv[])
 
     // Init terminal UI
     initscr();
-    mousemask(ALL_MOUSE_EVENTS, NULL);
     cbreak();
     noecho();
     curs_set(1);
