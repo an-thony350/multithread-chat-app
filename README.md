@@ -1,7 +1,4 @@
-# Multithreaded Chat Application — Implementation Notes
-
-> This README documents how the current repository implements the assignment requirements.
-> It focuses on design choices, data structures, threads, synchronization, and how features (including both PEs) are realized in the provided sources: `chat_server.c`, `chat_client.c`, and `udp.h`.
+# Multithreaded Chat Application
 
 ## Contents
 - [High-level summary](#high-level-summary)
