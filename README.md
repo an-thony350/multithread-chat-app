@@ -199,6 +199,7 @@ python3 test_history.py
 python3 test_inactivity.py
 python3 test_multiclient.py
 python3 test_stress.py
+```
 
 ---
 ## Repository layout
