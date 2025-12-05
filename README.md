@@ -165,7 +165,7 @@ pkill chat_server
 ```
 
 ---
-### Supported Commands
+## Supported Commands
 
 | Command              | Description                                |
 |----------------------|--------------------------------------------|
@@ -179,7 +179,7 @@ pkill chat_server
 | kick$ USER            | Admin command (port 6666 only)            |
 | ret-ping$            | Client heartbeat reply                     |
 
-### Testing
+## Testing
 
 Automated test scripts are included under `test_scripts/` covering:
 
