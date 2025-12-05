@@ -1,3 +1,21 @@
+/*
+  Multithreaded UDP Chat Server
+  -----------------------------
+  Responsibilities:
+    - Maintain a list of active clients (IP, port, name)
+    - Handle chat commands (conn, say, sayto, mute, rename, kick, etc.)
+    - Broadcast messages while respecting mute lists
+    - Maintain a rolling history buffer for new connections
+    - Detect and remove inactive clients via a monitor thread
+ 
+  Concurrency Model:
+    - Each incoming packet is handled by a detached worker thread.
+    - Shared client table protected by a pthread rwlock:
+        - Read lock for lookups / broadcasts
+        - Write lock for mutations (connect, rename, mute, kick)
+    - Chat history protected by a mutex.
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,7 +34,7 @@
 #define PING_TIMEOUT 20 // seconds
 #define MONITOR_INTERVAL 10 // seconds
 
-// Message history buffer
+// Circular buffer storing the last HISTORY_SIZE broadcast messages
 static char history[HISTORY_SIZE][BUFFER_SIZE];
 static int history_count = 0;
 static int history_start = 0;
@@ -26,7 +44,8 @@ static pthread_mutex_t history_lock = PTHREAD_MUTEX_INITIALIZER;
 static void history_add(const char *msg);
 static void history_send_to_client(int sd, struct sockaddr_in *addr);
 
-// Client record 
+// Representation of a connected client
+// Maps an IP:port to a name and state
 typedef struct {
     int active;                         
     char name[MAX_NAME_LEN];            
@@ -68,7 +87,7 @@ static int find_client_by_name(const char *name) {
     return -1;
 }
 
-// Add client (assumes caller holds write lock). Returns index or -1 on failure 
+// Add client (enforcing unique name)
 static int add_client(const char *name, const struct sockaddr_in *addr) {
     // enforce unique name
     if (find_client_by_name(name) != -1) return -1;
@@ -89,7 +108,8 @@ static int add_client(const char *name, const struct sockaddr_in *addr) {
     return -1; //table full
 }
 
-// Remove client by index (assumes caller holds write lock) 
+// Remove client by index
+// Clears state and frees name
 static void remove_client_by_index(int idx) {
     if (idx < 0 || idx >= MAX_CLIENTS) return;
     clients[idx].active = 0;
@@ -98,7 +118,7 @@ static void remove_client_by_index(int idx) {
     memset(&clients[idx].addr, 0, sizeof(clients[idx].addr));
 }
 
-// Add name to client's muted list (assumes write lock, idx valid) 
+// Add name to client's muted list 
 static int add_muted(int idx, const char *target) {
     if (idx < 0 || idx >= MAX_CLIENTS) return -1;
     if (clients[idx].muted_count >= MAX_MUTE) return -1;
@@ -112,7 +132,7 @@ static int add_muted(int idx, const char *target) {
     return 0;
 }
 
-// Remove name from client's muted list (assumes write lock, idx valid)
+// Remove name from client's muted list 
 static int remove_muted(int idx, const char *target) {
     if (idx < 0 || idx >= MAX_CLIENTS) return -1;
     int found = -1;
@@ -128,7 +148,7 @@ static int remove_muted(int idx, const char *target) {
     return 0;
 }
 
-// Check if recipient has muted sender (assumes caller has lock to read names safely) 
+// Check if recipient has muted sender 
 static int recipient_has_muted_sender(int recipient_idx, const char *sender_name) {
     if (recipient_idx < 0 || recipient_idx >= MAX_CLIENTS) return 0;
     for (int i = 0; i < clients[recipient_idx].muted_count; ++i) {
@@ -137,7 +157,8 @@ static int recipient_has_muted_sender(int recipient_idx, const char *sender_name
     return 0;
 }
 
-// Broadcast message to all clients 
+// Broadcast message to all clients
+// Writes to history and skips optional sender index 
 static void broadcast_all(int sd, const char *msg, int skip_idx) {
     history_add(msg);
     pthread_rwlock_rdlock(&clients_lock);
@@ -208,7 +229,7 @@ typedef struct {
     int sd;
 } worker_arg_t;
 
-// Helper: trim end of line characters
+// Trims trailing newline characters
 static void rtrim(char *s) {
     int len = strlen(s);
     while (len > 0 && (s[len-1] == '\n' || s[len-1] == '\r')) {
@@ -217,7 +238,7 @@ static void rtrim(char *s) {
     }
 }
 
-// Trim leading and trailing spaces/tabs
+// Trim leading and trailing spaces/tabs for safer parsing
 static void trim_spaces(char *s) {
     // Trim leading
     char *start = s;
@@ -234,6 +255,8 @@ static void trim_spaces(char *s) {
         len--;
     }
 }
+
+// Note: both fns trim_spaces and rtrim could be combined, but i kept separate for clarity
 
 
 // Worker: handle one incoming request 
@@ -265,6 +288,7 @@ static void *request_handler(void *v) {
     trim_spaces(type);
     trim_spaces(payload);
 
+    // Respond to ret-ping immediately
     if (strcmp(type, "ret-ping") == 0) {
         pthread_rwlock_wrlock(&clients_lock);
         int idx = find_client_by_addr(&client_addr);
@@ -606,7 +630,13 @@ static void *request_handler(void *v) {
 
     return NULL;
 }
-
+/*
+ Background thread that removes inactive clients.
+ Process:
+   1. Periodically scan table for LRU client
+   2. If inactive for threshold → send ping
+   3. If ping times out → disconnect
+*/
 static void *monitor_thread(void *v) {
     int sd = *(int *)v;
 
