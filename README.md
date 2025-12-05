@@ -179,6 +179,7 @@ pkill chat_server
 | kick$ USER            | Admin command (port 6666 only)            |
 | ret-ping$            | Client heartbeat reply                     |
 
+---
 ## Testing
 
 Automated test scripts are included under `test_scripts/` covering:
@@ -199,8 +200,7 @@ python3 test_inactivity.py
 python3 test_multiclient.py
 python3 test_stress.py
 
-
-
+---
 ## Repository layout
 - `chat_server.c` — server (listener, worker threads, monitor thread, client table, history)
 - `chat_client.c` — client (ncurses UI, sender/listener threads)
