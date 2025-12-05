@@ -20,7 +20,7 @@
 ---
 
 ## High-level summary
-- The server is UDP-based, listens on `SERVER_PORT` (12000 by assignment), uses a fixed-size client table (`MAX_CLIENTS`) and spawns a detached worker thread per incoming request.
+- The server is UDP-based, listens on `SERVER_PORT`, uses a fixed-size client table (`MAX_CLIENTS`) and spawns a detached worker thread per incoming request.
 - The client is a terminal UI implemented with `ncurses`, spawns one sender thread and one listener thread, and sends raw requests like `type$payload` to the server.
 - Two proposed extensions are implemented:
   - PE1: A circular history buffer of the last 15 broadcast messages; history is sent to new clients on `conn$`.
@@ -126,8 +126,8 @@
 
 ```bash
 # From repository root (multithread-chat-app/)
-gcc chat_server.c -o chat_server -lpthread
-gcc chat_client.c -o chat_client -lncurses
+gcc chat_server.c -o chat_server 
+gcc chat_client.c -o chat_client -lncurses -lpthread
 ```
 
 - Run server (foreground):
@@ -140,7 +140,7 @@ gcc chat_client.c -o chat_client -lncurses
 
 ```bash
 ./chat_server &
-# record PID and kill when done:
+# kill when done:
 pkill chat_server
 ```
 
