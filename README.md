@@ -15,13 +15,14 @@
   - [Message handling and history markers](#message-handling-and-history-markers)
   - [Admin mode and ports](#admin-mode-and-ports)
 - [Build & Run (exact flags used)](#build--run-exact-flags-used)
+- [Supported Commands](#supported-commands)
 - [Repository layout](#repository-layout)
 
 ---
 
 ## High-level summary
 - The server is UDP-based, listens on `SERVER_PORT`, uses a fixed-size client table (`MAX_CLIENTS`) and spawns a detached worker thread per incoming request.
-- The client is a terminal UI implemented with `ncurses`, spawns one sender thread and one listener thread, and sends raw requests like `type$payload` to the server.
+- The client is a terminal UI implemented with `ncurses`, spawns one sender thread and one listener thread, and sends raw requests like `type$ payload` to the server.
 - Two proposed extensions are implemented:
   - PE1: A circular history buffer of the last 15 broadcast messages; history is sent to new clients on `conn$`.
   - PE2: An inactivity monitor thread periodically pings the least-recently-active client and removes it if it does not respond.
@@ -38,7 +39,7 @@
   - `muted` list (array of strings) and `muted_count`
   - `last_active` timestamp (time_t)
   - `ping_sent` and `ping_time` for inactivity handling
-- Storage: fixed-size array `clients[MAX_CLIENTS]` (simple contiguous table).
+- Storage: fixed-size array `clients[MAX_CLIENTS]` 
   - Rationale: simple and deterministic. Table entry indices are used as client IDs internally.
 
 ### Networking and worker model
@@ -73,7 +74,13 @@
 - If inactivity exceeds `INACTIVITY_THRESHOLD`, it:
   - Sends a `ping$` message to the selected client and marks `ping_sent` and `ping_time`.
   - If a previous ping exists and `PING_TIMEOUT` elapses without activity (clients update `last_active` when they send any request), the monitor removes the client and broadcasts a disconnection message.
-- Ping replies: clients should reply with `ret-ping$` (the server accepts `ret-ping` but request handler currently returns early on `ret-ping` — presence of `ret-ping` resets last-active logic when the client is found).
+- Ping replies: clients reply with `ret-ping$`.
+- On receiving `ret-ping`, the server immediately updates:
+  - `last_active`
+  - `ping_sent = 0`
+  - `ping_time = 0`
+This prevents the client from being removed by the inactivity monitor thread.
+
 
 ### Synchronization strategy
 - `clients_lock` is a `pthread_rwlock_t`:
@@ -157,6 +164,19 @@ pkill chat_server
 ```
 
 ---
+### Supported Commands
+
+| Command              | Description                                |
+|----------------------|--------------------------------------------|
+| conn$NAME            | Connect to the chat with a username        |
+| say$MESSAGE          | Broadcast message                          |
+| sayto$USER MESSAGE   | Private message                            |
+| mute$USER            | Mute user                                  |
+| unmute$USER          | Unmute user                                |
+| rename$NEWNAME       | Change username                            |
+| disconn$             | Disconnect                                 |
+| kick$USER            | Admin command (port 6666 only)             |
+| ret-ping$            | Client heartbeat reply                     |
 
 
 ## Repository layout
