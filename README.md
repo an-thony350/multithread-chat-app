@@ -16,6 +16,7 @@
   - [Admin mode and ports](#admin-mode-and-ports)
 - [Build & Run (exact flags used)](#build--run-exact-flags-used)
 - [Supported Commands](#supported-commands)
+- [Testing](#testing)
 - [Repository layout](#repository-layout)
 
 ---
@@ -177,6 +178,27 @@ pkill chat_server
 | disconn$             | Disconnect                                 |
 | kick$ USER            | Admin command (port 6666 only)            |
 | ret-ping$            | Client heartbeat reply                     |
+
+### Testing
+
+Automated test scripts are included under `test_scripts/` covering:
+
+- Basic client-server communication
+- Broadcast testing
+- History buffer correctness
+- Inactivity detection and removal
+- Multi-client behaviour
+- Stress/load testing
+
+All scripts can be run individually:
+
+```bash
+python3 test_basics.py
+python3 test_history.py
+python3 test_inactivity.py
+python3 test_multiclient.py
+python3 test_stress.py
+
 
 
 ## Repository layout
