@@ -168,14 +168,14 @@ pkill chat_server
 
 | Command              | Description                                |
 |----------------------|--------------------------------------------|
-| conn$NAME            | Connect to the chat with a username        |
-| say$MESSAGE          | Broadcast message                          |
-| sayto$USER MESSAGE   | Private message                            |
-| mute$USER            | Mute user                                  |
-| unmute$USER          | Unmute user                                |
-| rename$NEWNAME       | Change username                            |
+| conn$ NAME            | Connect to the chat with a username       |
+| say$ MESSAGE          | Broadcast message                         |
+| sayto$ USER MESSAGE   | Private message                           |
+| mute$ USER            | Mute user                                 |
+| unmute$ USER          | Unmute user                               |
+| rename$ NEWNAME       | Change username                           |
 | disconn$             | Disconnect                                 |
-| kick$USER            | Admin command (port 6666 only)             |
+| kick$ USER            | Admin command (port 6666 only)            |
 | ret-ping$            | Client heartbeat reply                     |
 
 
