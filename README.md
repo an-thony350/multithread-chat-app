@@ -206,8 +206,8 @@ python3 test_stress.py
 - `chat_server.c` — server (listener, worker threads, monitor thread, client table, history)
 - `chat_client.c` — client (ncurses UI, sender/listener threads)
 - `udp.h` — UDP helper wrappers and constants (used by both client and server)
-- `compile.sh` — optional helper script (if present)
-- `test_scripts/` — automated tests (optional)
+- `compile.sh` — compilation script 
+- `test_scripts/` — automated tests to show functionality
 
 ---
 
