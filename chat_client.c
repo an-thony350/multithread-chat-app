@@ -122,6 +122,46 @@ void *listener_thread(void *arg)
     }
     return NULL;
 }
+/*
+  print_own_message
+
+  Prints a message sent by the user to the chat pad with timestamp. (Same structure as listener thread)
+
+  I know probably not the best implementation of this functionality,
+  but I thought of this too late to refactor and wanted a simple fix
+*/
+static void print_own_message(const char *msg)
+{
+    time_t t = time(NULL);
+    struct tm *tm_info = localtime(&t);
+
+    char timestamp[16];
+    strftime(timestamp, sizeof(timestamp), "[%H:%M]", tm_info);
+
+    pthread_mutex_lock(&ui_lock);
+
+    mvwprintw(chat_pad, chat_lines++, 0, "You: %s", msg);
+
+    int rows, cols;
+    getmaxyx(stdscr, rows, cols);
+
+    int ts_col = cols - (int)strlen(timestamp) - 1;
+    if (ts_col < 0) ts_col = 0;
+
+    mvwprintw(chat_pad, chat_lines - 1, ts_col, "%s", timestamp);
+
+    // Scroll view if needed
+    pnoutrefresh(
+        chat_pad,
+        (chat_lines > rows - 2 ? chat_lines - (rows - 2) : 0),
+        0,
+        0, 0,
+        rows - 3, cols - 1
+    );
+
+    wrefresh(input_win);
+    pthread_mutex_unlock(&ui_lock);
+}
 
 /*
   sender_thread
@@ -215,6 +255,10 @@ void *sender_thread(void *arg)
 
         // Send the raw request to the server
         udp_socket_write(sd, &server_addr, client_request, strlen(client_request));
+
+        if (strncmp(client_request, "say$", 4) == 0) {
+            print_own_message(client_request + 4); // skip "say$"
+        }
 
         pthread_mutex_lock(&ui_lock);
         wclear(input_win);
