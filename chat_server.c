@@ -265,7 +265,15 @@ static void *request_handler(void *v) {
     trim_spaces(type);
     trim_spaces(payload);
 
-        if (strcmp(type, "ret-ping") == 0){
+    if (strcmp(type, "ret-ping") == 0) {
+        pthread_rwlock_wrlock(&clients_lock);
+        int idx = find_client_by_addr(&client_addr);
+        if (idx != -1) {
+            clients[idx].last_active = time(NULL);
+            clients[idx].ping_sent = 0;
+            clients[idx].ping_time = 0;
+        }
+        pthread_rwlock_unlock(&clients_lock);
         return NULL;
     }
 
@@ -308,7 +316,6 @@ static void *request_handler(void *v) {
             }
             strncpy(clients[existing].name, payload, MAX_NAME_LEN - 1);
             clients[existing].name[MAX_NAME_LEN - 1] = '\0';
-            clients[existing].muted_count = clients[existing].muted_count; // keep mutes
             sender_idx = existing;
         } else {
             // new registration, ensure name not in use
