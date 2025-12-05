@@ -15,6 +15,7 @@ WINDOW *input_win;
 int chat_lines = 0;
 int scroll_offset = 0;
 volatile int should_exit = 0;
+pthread_mutex_t ui_lock = PTHREAD_MUTEX_INITIALIZER;
 
 void redraw_pad();
 
@@ -38,6 +39,7 @@ void *listener_thread(void *arg)
         int rc = udp_socket_read(sd, &responder_addr, buffer, BUFFER_SIZE);
         if (rc > 0)
         {
+            if (rc >= BUFFER_SIZE) rc = BUFFER_SIZE - 1;
             buffer[rc] = '\0';
             
             // Generate timestamp 
@@ -47,21 +49,23 @@ void *listener_thread(void *arg)
             strftime(timestamp, sizeof(timestamp), "[%H:%M]", tm_info);
 
             int line = chat_lines;
-            // Check for history prefix
-            int is_history = 0;
             char *msg_text = buffer;
 
             if (strncmp(buffer, "[History]", 10) == 0) {
-                is_history = 1;
                 msg_text = buffer + 10; // skip "[History]"
             }
+
+            pthread_mutex_lock(&ui_lock);
 
             mvwprintw(chat_pad, chat_lines++, 0, "%s", msg_text);
     
             // Print timestamp flush right
             int rows, cols;
             getmaxyx(stdscr, rows, cols);
-            mvwprintw(chat_pad, chat_lines - 1, cols - (int)strlen(timestamp) - 2, "%s", timestamp);
+            
+            int ts_col = cols - (int)strlen(timestamp) - 1;
+            if (ts_col < 0) ts_col = 0;
+            mvwprintw(chat_pad, chat_lines - 1, ts_col, "%s", timestamp);
 
 
             // Refresh visible portion of chat pad
@@ -75,6 +79,8 @@ void *listener_thread(void *arg)
             );
             // Refresh input window to prevent overlap
             wrefresh(input_win);
+
+            pthread_mutex_unlock(&ui_lock);
         }
     }
     return NULL;
@@ -101,9 +107,7 @@ void *sender_thread(void *arg)
         while ((ch = wgetch(input_win)))
         {
             // Handles special keys
-            if (ch == KEY_RESIZE || 
-                ch == KEY_MOUSE ||
-                ch == ERR) 
+            if (ch == KEY_RESIZE || ch == ERR) 
             {
                 continue;
             }
@@ -116,7 +120,12 @@ void *sender_thread(void *arg)
                 
             }
             if (ch == KEY_UP) {
-                if (scroll_offset < chat_lines - 1) 
+                int rows, cols;
+                getmaxyx(stdscr, rows, cols);
+                int max_scroll = chat_lines - (rows - 2);
+            if (max_scroll < 0) max_scroll = 0;
+
+            if (scroll_offset < max_scroll)
                 scroll_offset++;
                 redraw_pad();
                 continue;
@@ -128,18 +137,22 @@ void *sender_thread(void *arg)
                     input_pos--;
                     client_request[input_pos] = '\0';
                 }
+                pthread_mutex_lock(&ui_lock);
                 wmove(input_win, 0, 2);
                 wclrtoeol(input_win);
                 wprintw(input_win, "%s", client_request);
                 wrefresh(input_win);
+                pthread_mutex_unlock(&ui_lock);
                 continue;
             }
             // Append normal characters
             if (input_pos < BUFFER_SIZE - 1) {
                 client_request[input_pos++] = ch;
                 client_request[input_pos] = '\0';
+                pthread_mutex_lock(&ui_lock);
                 wclrtoeol(input_win);
                 wrefresh(input_win);
+                pthread_mutex_unlock(&ui_lock);
             }
         }
 
@@ -152,9 +165,11 @@ void *sender_thread(void *arg)
         // Send the raw request to the server
         udp_socket_write(sd, &server_addr, client_request, strlen(client_request));
 
+        pthread_mutex_lock(&ui_lock);
         wclear(input_win);
         mvwprintw(input_win, 0, 0, "> ");
         wrefresh(input_win);
+        pthread_mutex_unlock(&ui_lock);
 
         // Quit client on request
         if (strncmp(client_request, "disconn$", 8) == 0)
@@ -169,6 +184,7 @@ void *sender_thread(void *arg)
 
 // Refresh visible portion of chat pad
 void redraw_pad() {
+    pthread_mutex_lock(&ui_lock);
     int rows, cols;
     getmaxyx(stdscr, rows, cols);
 
@@ -182,6 +198,7 @@ void redraw_pad() {
         rows - 3, cols - 1
     );
     doupdate();
+    pthread_mutex_unlock(&ui_lock);
 }
 
 
@@ -210,11 +227,13 @@ int main(int argc, char *argv[])
     args.sd = sd;
     args.addr = server_addr;
 
+    pthread_mutex_lock(&ui_lock);
     // Init terminal UI
     initscr();
     cbreak();
     noecho();
     curs_set(1);
+    pthread_mutex_unlock(&ui_lock);
 
     int rows, cols;
     getmaxyx(stdscr, rows, cols);
