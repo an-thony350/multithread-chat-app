@@ -30,7 +30,7 @@
 #define MAX_NAME_LEN 64
 #define MAX_MUTE 64
 #define HISTORY_SIZE 15
-#define INACTIVITY_THRESHOLD 600 // seconds
+#define INACTIVITY_THRESHOLD 10 // seconds
 #define PING_TIMEOUT 20 // seconds
 #define MONITOR_INTERVAL 10 // seconds
 
