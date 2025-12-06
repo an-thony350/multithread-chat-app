@@ -1,81 +1,81 @@
-# test_basic.py
 import socket
 import time
 
 SERVER_IP = "127.0.0.1"
 SERVER_PORT = 12000
 
-def send_recv(sock, msg, timeout=0.5):
-    # Clear the socket
+# Fn for printing section banners
+def banner(title):
+    print("\n" + "=" * 60)
+    print(title)
+    print("=" * 60)
+
+# Clear any queued UDP packets so each test only reads responses related to the current command
+def drain_socket(sock):
+    """Remove any queued packets so we read only new responses."""
     sock.setblocking(False)
-    while True:
-        try:
+    try:
+        while True:
             sock.recvfrom(8192)
-        except:
-            break
+    except:
+        pass
     sock.setblocking(True)
 
-    # Send command
+# Send a command to the server and print the first reply (if any)
+def send_recv(sock, msg, timeout=1.0):
+    """Send a request and return the first response (if any)."""
+    drain_socket(sock)
+
+    print(f"→ Sending: {msg}")
     sock.sendto(msg.encode(), (SERVER_IP, SERVER_PORT))
 
-    # Get FIRST incoming packet
     sock.settimeout(timeout)
     try:
         data, _ = sock.recvfrom(8192)
-        return data.rstrip(b"\x00").decode(errors="replace").strip()
+        reply = data.rstrip(b"\x00").decode(errors="replace").strip()
+        print(f"← Received:")
+        print("  ", reply)
     except socket.timeout:
-        return "<NO RESPONSE>"
+        print("← Received:")
+        print("   <NO RESPONSE>")
+    finally:
+        sock.settimeout(None)
 
+    time.sleep(0.3)
 
-
-def banner(title):
-    print("\n" + "="*60)
-    print(title)
-    print("="*60)
 
 def main():
-    banner("BASIC BEHAVIOUR TEST")
+    banner("BASIC FUNCTIONALITY TEST")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("", 0))
 
-    banner("1. CONNECT TEST")
-    print("Sending: conn$Alice")
-    print("Response:", send_recv(sock, "conn$Alice"))
-    time.sleep(0.2)
+    print(f"Client bound to UDP port {sock.getsockname()[1]}")
+
+    banner("1. CONNECT")
+    send_recv(sock, "conn$ Alice")
 
     banner("2. BROADCAST (say$)")
-    print("Sending: say$Hello world")
-    print("Response:", send_recv(sock, "say$Hello world"))
-    time.sleep(0.2)
+    send_recv(sock, "say$ Hello world")
 
-    banner("3. PRIVATE MESSAGE (sayto$Bob)")
-    print("Sending: sayto$Bob How are you?")
-    print("Response:", send_recv(sock, "sayto$Bob How are you?"))
-    time.sleep(0.2)
+    banner("3. PRIVATE MESSAGE (sayto$)")
+    send_recv(sock, "sayto$ Bob How are you?")
 
     banner("4. MUTE")
-    print("Sending: mute$Charlie")
-    print("Response:", send_recv(sock, "mute$Charlie"))
-    time.sleep(0.2)
+    send_recv(sock, "mute$ Charlie")
 
     banner("5. UNMUTE")
-    print("Sending: unmute$Charlie")
-    print("Response:", send_recv(sock, "unmute$Charlie"))
-    time.sleep(0.2)
+    send_recv(sock, "unmute$ Charlie")
 
     banner("6. RENAME")
-    print("Sending: rename$Alice123")
-    print("Response:", send_recv(sock, "rename$Alice123"))
-    time.sleep(0.2)
+    send_recv(sock, "rename$ Alice123")
 
     banner("7. DISCONNECT")
-    print("Sending: disconn$")
-    print("Response:", send_recv(sock, "disconn$"))
-    time.sleep(0.2)
+    send_recv(sock, "disconn$")
 
     banner("TEST COMPLETE")
-    print("All tests executed. Check output above for server behaviour.\n")
+    print("Inspect output above to confirm correct behaviour.\n")
+
 
 if __name__ == "__main__":
     main()

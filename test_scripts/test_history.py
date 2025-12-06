@@ -4,85 +4,86 @@ import time
 SERVER_IP = "127.0.0.1"
 SERVER_PORT = 12000
 
+# Create and return a UDP client socket
 def make_client():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("", 0))
-    sock.settimeout(0.4)
+    sock.settimeout(0.1)
     return sock
 
+# Send a message to the server
 def send(sock, msg):
     sock.sendto(msg.encode(), (SERVER_IP, SERVER_PORT))
 
-def recv_all(sock):
-    """Return all packets available right now."""
+# Collect all packets that arrive within a short time window
+def recv_all(sock, max_wait=1.0):
     results = []
-    sock.setblocking(False)
-    while True:
+    end = time.time() + max_wait
+    while time.time() < end:
         try:
             data, _ = sock.recvfrom(4096)
             text = data.rstrip(b"\x00").decode(errors="replace").strip()
             results.append(text)
-        except:
-            break
-    sock.setblocking(True)
+        except socket.timeout:
+            pass
     return results
 
 def main():
     print("\n" + "="*60)
     print("PE1 HISTORY BUFFER TEST")
     print("="*60)
-
-    # Client A will generate history
+    
+    # First client connects and generates chat history
     A = make_client()
-    send(A, "conn$HistoryMaker")
-    time.sleep(0.4)
+    send(A, "conn$ HistoryMaker")
+    time.sleep(0.5)
     recv_all(A)
 
     print("\nGenerating 20 broadcast messages...\n")
-
-    # Send 20 broadcast messages
+    
+    # Send 20 broadcast messages to populate history buffer
     for i in range(20):
-        send(A, f"say$Message_{i}")
-        time.sleep(0.1)
-        recv_all(A)  # drain
+        send(A, f"say$ Message_{i}")
+        time.sleep(0.05)
+        recv_all(A)
 
     print("Finished sending 20 messages.")
-    print("Now connecting NEW client to fetch history.\n")
+    print("Connecting second client to receive history...\n")
 
-    # Connect new client to trigger history delivery
+    # Second client connects and should receive last N history entries
     B = make_client()
-    send(B, "conn$HistoryTester")
-    time.sleep(0.6)
-
-    history_packets = recv_all(B)
-
-    # Filter for [History] packets only
+    send(B, "conn$ HistoryTester")
+    history_packets = recv_all(B, max_wait=1.5)
+    
+    # Extract history-only packets
     history_only = [h for h in history_packets if h.startswith("[History]")]
 
-    print("Received History Packets:")
+    print("\nHistory received:")
     for h in history_only:
-        print("  " + h)
+        print(" ", h)
 
-    print("\nTotal history lines received:", len(history_only))
+    # Validate count
+    if len(history_only) != 15:
+        print("\nFAIL: Expected 15 history entries, received", len(history_only))
+        return
 
-    print("\nExpected:")
-    print("  Should be the LAST 15 messages: Message_5 through Message_19\n")
-
-    # Verification
     expected = [f"[History] HistoryMaker: Message_{i}" for i in range(5, 20)]
 
-    if history_only == expected:
-        print("RESULT: PASS — History buffer is correct.")
-    else:
-        print("RESULT: FAIL — History buffer incorrect.")
-        print("\nDifferences:")
-        print("Expected:", expected)
-        print("Got:", history_only)
+    mismatched = False
+    for e, g in zip(expected, history_only):
+        if e != g:
+            print("\nMismatch detected:")
+            print("Expected:", e)
+            print("Got:     ", g)
+            mismatched = True
 
-    # Cleanup
+    if not mismatched:
+        print("\nRESULT: PASS — History buffer is correct.")
+    else:
+        print("\nRESULT: FAIL — History output incorrect.")
+
     send(A, "disconn$")
     send(B, "disconn$")
-    time.sleep(0.2)
 
 if __name__ == "__main__":
     main()

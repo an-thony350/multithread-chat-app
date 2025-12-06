@@ -1,127 +1,157 @@
+#!/usr/bin/env python3
 import socket
 import random
 import time
 import threading
 import string
+import sys
 
 SERVER_IP = "127.0.0.1"
 SERVER_PORT = 12000
 
-CLIENT_COUNT = 25         
-TEST_DURATION = 10         
-ACTIONS_PER_CLIENT = 200   
+CLIENT_COUNT = 25
+TEST_DURATION = 10
+ACTIONS_PER_CLIENT = 200
 
-# ------------------------------------------------------------
-# Helper Functions
-# ------------------------------------------------------------
+PRINT_LOCK = threading.Lock()
 
+# Thread-safe logging function
+def log(msg):
+    with PRINT_LOCK:
+        print(msg)
+
+# Generate a random username
 def rand_name():
     return ''.join(random.choice(string.ascii_lowercase) for _ in range(6))
 
+# Create and return a UDP client socket
 def make_client():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("", 0))
     sock.settimeout(0.15)
     return sock
 
+# Send a message to the server
 def send(sock, msg):
     sock.sendto(msg.encode(), (SERVER_IP, SERVER_PORT))
 
-def drain(sock):
-    """Read and ignore all incoming server packets."""
+# Collect all packets that arrive within a short time window
+def recv_all(sock):
+    messages = []
     sock.setblocking(False)
+
     while True:
-        try: sock.recvfrom(4096)
-        except: break
+        try:
+            data, _ = sock.recvfrom(4096)
+            text = data.rstrip(b"\x00").decode(errors="replace").strip()
+            messages.append(text)
+        except:
+            break
+
     sock.setblocking(True)
+    return messages
 
-# ------------------------------------------------------------
-# Client Thread Function
-# ------------------------------------------------------------
-
-def client_thread(id_num):
+# Client thread function
+def client_thread(client_id):
     sock = make_client()
-    name = f"User{id_num}"
+    name = f"User{client_id}"
 
-    # connect
-    send(sock, f"conn${name}")
-    drain(sock)
-    time.sleep(0.05)
+    local_port = sock.getsockname()[1]
+    log(f"[{name}] Started on port {local_port}")
+
+    send(sock, f"conn$ {name}")
+    time.sleep(0.1)
+    recv_all(sock)   # ignore welcome + history
 
     start = time.time()
+    actions_done = 0
 
     for _ in range(ACTIONS_PER_CLIENT):
 
-        # stop early if time is up
         if time.time() - start > TEST_DURATION:
             break
 
-        action = random.choice(["say", "sayto", "rename", "mute", "unmute"])
+        action = random.choice([
+            "say", "sayto", "rename", "mute", "unmute"
+        ])
 
         if action == "say":
-            msg = f"say$Hello_from_{name}"
+            msg = f"say$ Hello from {name}"
             send(sock, msg)
 
         elif action == "sayto":
-            target = f"User{random.randint(0, CLIENT_COUNT-1)}"
-            msg = f"sayto${target} secret_{random.randint(0,100)}"
+            target = f"User{random.randint(0, CLIENT_COUNT - 1)}"
+            msg = f"sayto$ {target} private_{random.randint(0, 999)}"
             send(sock, msg)
 
         elif action == "rename":
             newname = rand_name()
+            send(sock, f"rename$ {newname}")
             name = newname
-            send(sock, f"rename${newname}")
 
         elif action == "mute":
-            target = f"User{random.randint(0, CLIENT_COUNT-1)}"
-            send(sock, f"mute${target}")
+            target = f"User{random.randint(0, CLIENT_COUNT - 1)}"
+            send(sock, f"mute$ {target}")
 
         elif action == "unmute":
-            target = f"User{random.randint(0, CLIENT_COUNT-1)}"
-            send(sock, f"unmute${target}")
+            target = f"User{random.randint(0, CLIENT_COUNT - 1)}"
+            send(sock, f"unmute$ {target}")
 
-        # small random spacing prevents purely synchronous bursts
-        time.sleep(random.uniform(0.005, 0.03))
+        responses = recv_all(sock)
+        for r in responses:
+            if "ERR$" in r:
+                log(f"[{name}] ERROR: {r}")
 
-        # drain any replies, we don’t care what they are
-        drain(sock)
+        actions_done += 1
 
-    # disconnect
+        # random pacing avoids accidental synchronization
+        time.sleep(random.uniform(0.005, 0.04))
+
     send(sock, "disconn$")
-    drain(sock)
+    time.sleep(0.1)
+    recv_all(sock)
+
     sock.close()
+    log(f"[{name}] Finished after {actions_done} actions")
 
-# ------------------------------------------------------------
-# MAIN TEST DRIVER
-# ------------------------------------------------------------
 
+# Main test function
 def main():
-    print("\n" + "="*60)
-    print("CONCURRENCY STRESS TEST: STARTING")
-    print("="*60)
+    print("\n" + "=" * 70)
+    print("CONCURRENCY STRESS TEST")
+    print("Clients:", CLIENT_COUNT)
+    print("Duration:", TEST_DURATION, "seconds")
+    print("Max actions per client:", ACTIONS_PER_CLIENT)
+    print("=" * 70 + "\n")
 
     threads = []
-
-    # spin up client threads
+    start = time.time()
+    
     for i in range(CLIENT_COUNT):
         th = threading.Thread(target=client_thread, args=(i,))
         th.start()
         threads.append(th)
-        time.sleep(0.02)  # stagger start a bit
+        time.sleep(0.03)   
 
-    # wait for all to finish
     for th in threads:
         th.join()
 
-    print("\n" + "="*60)
-    print("CONCURRENCY STRESS TEST: COMPLETE")
-    print("="*60)
-    print("\nCheck server output for:")
+    elapsed = time.time() - start
+
+    print("\n" + "=" * 70)
+    print("STRESS TEST COMPLETE")
+    print("=" * 70)
+    print(f"Elapsed time: {elapsed:.2f} seconds\n")
+
+    print("What to check on server:")
     print(" - No crashes / segfaults")
     print(" - No deadlocks")
-    print(" - Consistent formatting")
-    print(" - Valid system messages")
-    print(" - No corruption in user list operations\n")
+    print(" - No runaway memory usage")
+    print(" - No corrupted usernames")
+    print(" - No missing / out-of-order state changes")
+    print(" - No infinite ping loops")
+    print(" - Graceful handling of duplicate names\n")
+
 
 if __name__ == "__main__":
     main()
