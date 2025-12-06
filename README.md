@@ -4,6 +4,8 @@
 - [High-level summary](#high-level-summary)
 - [Server implementation (`chat_server.c`)](#server-implementation-chat_serverc)
   - [Client record and storage](#client-record-and-storage)
+  - [Why an Array was used](#why-an-array-was-used)
+  - 
   - [Networking and worker model](#networking-and-worker-model)
   - [Broadcasting, private messages, and mute handling](#broadcasting-private-messages-and-mute-handling)
   - [History buffer (PE 1)](#history-buffer-pe-1)
@@ -41,7 +43,19 @@
   - `last_active` timestamp (time_t)
   - `ping_sent` and `ping_time` for inactivity handling
 - Storage: fixed-size array `clients[MAX_CLIENTS]` 
-  - Rationale: simple and deterministic. Table entry indices are used as client IDs internally.
+
+#### Why an array was used
+
+An array was chosen instead of a linked list for the following reasons:
+
+- **Deterministic memory usage** — No dynamic allocation or fragmentation risk.
+- **O(1) index-based access** — Client IDs are simply array indices.
+- **Simpler concurrency control** — A single read–write lock cleanly protects the entire table.
+- **Lower implementation complexity** — No pointer management or list traversal logic.
+- **Easy full-table scans** — Required for broadcast, inactivity checks, and admin operations.
+
+Operations such as broadcasting, inactivity detection, and name lookup already require scanning all clients, so a linked list would not reduce time complexity.
+(also i realised too late that i shouldn't have used an array)
 
 ### Networking and worker model
 - Main listener loop:
@@ -167,17 +181,17 @@ pkill chat_server
 ---
 ## Supported Commands
 
-| Command              | Description                                |
-|----------------------|--------------------------------------------|
+| Command               | Description                               |
+|-----------------------|-------------------------------------------|
 | conn$ NAME            | Connect to the chat with a username       |
 | say$ MESSAGE          | Broadcast message                         |
 | sayto$ USER MESSAGE   | Private message                           |
 | mute$ USER            | Mute user                                 |
 | unmute$ USER          | Unmute user                               |
 | rename$ NEWNAME       | Change username                           |
-| disconn$             | Disconnect                                 |
+| disconn$              | Disconnect                                |
 | kick$ USER            | Admin command (port 6666 only)            |
-| ret-ping$            | Client heartbeat reply                     |
+| ret-ping$             | Client heartbeat reply                    |
 
 ---
 ## Testing
@@ -199,6 +213,8 @@ python3 test_history.py
 python3 test_inactivity.py
 python3 test_multiclient.py
 python3 test_stress.py
+python3 test_stress_valid.py
+python3 test_malformed
 ```
 
 ---
