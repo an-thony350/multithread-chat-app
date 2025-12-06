@@ -5,7 +5,6 @@
 - [Server implementation (`chat_server.c`)](#server-implementation-chat_serverc)
   - [Client record and storage](#client-record-and-storage)
   - [Why an Array was used](#why-an-array-was-used)
-  - 
   - [Networking and worker model](#networking-and-worker-model)
   - [Broadcasting, private messages, and mute handling](#broadcasting-private-messages-and-mute-handling)
   - [History buffer (PE 1)](#history-buffer-pe-1)
