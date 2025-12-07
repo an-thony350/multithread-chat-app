@@ -1,5 +1,8 @@
 # Multithreaded Chat Application
 
+Anthony Bartlett - 0255 6059
+Denzil Erza-Essien - 0259 3040
+
 ## Contents
 - [High-level summary](#high-level-summary)
 - [Server implementation (`chat_server.c`)](#server-implementation-chat_serverc)
