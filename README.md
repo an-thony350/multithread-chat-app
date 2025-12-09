@@ -7,7 +7,6 @@ Denzil Erza-Essien - 0259 3040
 - [High-level summary](#high-level-summary)
 - [Server implementation (`chat_server.c`)](#server-implementation-chat_serverc)
   - [Client record and storage](#client-record-and-storage)
-  - [Why an Array was used](#why-an-array-was-used)
   - [Networking and worker model](#networking-and-worker-model)
   - [Broadcasting, private messages, and mute handling](#broadcasting-private-messages-and-mute-handling)
   - [History buffer (PE 1)](#history-buffer-pe-1)
@@ -26,7 +25,7 @@ Denzil Erza-Essien - 0259 3040
 ---
 
 ## High-level summary
-- The server is UDP-based, listens on `SERVER_PORT`, uses a fixed-size client table (`MAX_CLIENTS`) and spawns a detached worker thread per incoming request.
+- The server is UDP-based, listens on `SERVER_PORT`, stores connected clients in a linked list, and spawns a detached worker thread per incoming request.
 - The client is a terminal UI implemented with `ncurses`, spawns one sender thread and one listener thread, and sends raw requests like `type$ payload` to the server.
 - Two proposed extensions are implemented:
   - PE1: A circular history buffer of the last 15 broadcast messages; history is sent to new clients on `conn$`.
@@ -44,27 +43,22 @@ Denzil Erza-Essien - 0259 3040
   - `muted` list (array of strings) and `muted_count`
   - `last_active` timestamp (time_t)
   - `ping_sent` and `ping_time` for inactivity handling
-- Storage: fixed-size array `clients[MAX_CLIENTS]` 
-
-#### Why an array was used
-
-An array was chosen instead of a linked list for the following reasons:
-
-- **Deterministic memory usage** — No dynamic allocation or fragmentation risk.
-- **O(1) index-based access** — Client IDs are simply array indices.
-- **Simpler concurrency control** — A single read–write lock cleanly protects the entire table.
-- **Lower implementation complexity** — No pointer management or list traversal logic.
-- **Easy full-table scans** — Required for broadcast, inactivity checks, and admin operations.
-
-Operations such as broadcasting, inactivity detection, and name lookup already require scanning all clients, so a linked list would not reduce time complexity.
-(also i realised too late that i shouldn't have used an array)
+- Each client is wrapped in a `ClientNode` and stored in a dynamically allocated singly linked list 
+  ```c
+  typedef struct ClientNode {
+    Client client;
+    struct ClientNode *next;
+  } ClientNode;
+  ```
+- The head pointer `static ClientNode *clients_head;` represents the start of the client list
+- Alinked list is used due to its dynamic size, having no wasted memory, or any client limits.
 
 ### Networking and worker model
 - Main listener loop:
   - Calls `udp_socket_read(sd, &client_addr, buf, BUFFER_SIZE)` to receive a datagram.
   - For every valid incoming datagram, it allocates a `worker_arg_t`, copies the request and the client's address, and spawns a detached thread that runs `request_handler`.
 - `request_handler`:
-  - Parses messages of form `type$payload` (looks for `$` separator).
+  - Parses messages of form `type$payload` (looks for `$` delimiter).
   - Recognized types: `conn`, `say`, `sayto`, `mute`, `unmute`, `rename`, `disconn`, `kick`, and `ret-ping` (the ping reply handling is minimal).
   - For malformed or unknown commands it replies with an `ERR$`-prefixed message.
 
@@ -75,7 +69,7 @@ Operations such as broadcasting, inactivity detection, and name lookup already r
   - Respects recipients' mute lists by calling `recipient_has_muted_sender`.
   - Does not deliver a sender's message to themselves.
 - Private messaging (`sayto`):
-  - The server parses the first token of `payload` as recipient name, finds recipient index via `find_client_by_name`, checks if recipient muted the sender, then sends a direct UDP message to the recipient and a `SYS$` ack to the sender.
+  - The server parses the first token of `payload` as recipient name, finds recipient on the linked list via `find_client_by_name`, checks if recipient muted the sender, then sends a direct UDP message to the recipient and a `SYS$` ack to the sender.
 
 ### History buffer (PE 1)
 - Circular buffer implemented with:
@@ -87,7 +81,7 @@ Operations such as broadcasting, inactivity detection, and name lookup already r
 
 ### Inactivity monitor (PE 2)
 - Monitor thread (`monitor_thread`) runs periodically (interval `MONITOR_INTERVAL` seconds).
-- It finds the least-recently-active client by scanning `clients[]` under a read lock.
+- It finds the least-recently-active client by scanning the linked list under a read lock.
 - If inactivity exceeds `INACTIVITY_THRESHOLD`, it:
   - Sends a `ping$` message to the selected client and marks `ping_sent` and `ping_time`.
   - If a previous ping exists and `PING_TIMEOUT` elapses without activity (clients update `last_active` when they send any request), the monitor removes the client and broadcasts a disconnection message.
@@ -100,9 +94,9 @@ This prevents the client from being removed by the inactivity monitor thread.
 
 
 ### Synchronization strategy
-- `clients_lock` is a `pthread_rwlock_t`:
-  - Read lock (`pthread_rwlock_rdlock`) used for operations that only inspect the table (e.g., scanning for recipients for `sayto`, broadcasting).
-  - Write lock (`pthread_rwlock_wrlock`) used for modifications: `add_client`, `remove_client_by_index`, muting/unmuting, rename, updating `last_active`, and marking ping fields.
+- `clients_lock` is a `pthread_rwlock_t` protecting the linked list:
+  - Read lock (`pthread_rwlock_rdlock`) used for operations that only inspect the linked list (e.g., scanning for recipients for `sayto`, broadcasting).
+  - Write lock (`pthread_rwlock_wrlock`) used for modifications: `add_client`, `remove_client`, muting/unmuting, rename, updating `last_active`, and marking ping fields.
 - `history_lock` is a `pthread_mutex_t` guarding the circular history buffer.
 - Rationale: Reader–writer lock allows multiple concurrent reads (e.g., many broadcast/send ops) while serializing updates.
 
@@ -111,7 +105,7 @@ This prevents the client from being removed by the inactivity monitor thread.
 - Upon `kick$ name`, server:
   - Finds target by name.
   - Sends `SYS$You have been removed from the chat` to the target.
-  - Removes client from table and broadcasts `SYS$<name> has been removed...` to others.
+  - Removes client from linked list and broadcasts `SYS$<name> has been removed...` to others.
 
 ---
 

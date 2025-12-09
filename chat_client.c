@@ -195,7 +195,7 @@ void *sender_thread(void *arg)
         int input_pos = 0;
         client_request[0] = '\0';
         
-        while ((ch = wgetch(input_win)))
+        while ((ch = wgetch(input_win)) != ERR)
         {
             // Handles special keys
             if (ch == KEY_RESIZE || ch == ERR) 

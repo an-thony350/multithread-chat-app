@@ -26,7 +26,6 @@
 #include <time.h>
 #include "udp.h"
 
-#define MAX_CLIENTS 128
 #define MAX_NAME_LEN 64
 #define MAX_MUTE 64
 #define HISTORY_SIZE 15
@@ -58,8 +57,15 @@ typedef struct {
     time_t ping_time;
 } Client;
 
-// Global client table + lock protecting it
-static Client clients[MAX_CLIENTS];
+// Linked list node for clients
+// Unordered and protected by clients_lock
+typedef struct ClientNode {
+    Client client;
+    struct ClientNode *next;
+} ClientNode;
+
+// Head of linked list of clients 
+static ClientNode *clients_head = NULL;
 static pthread_rwlock_t clients_lock = PTHREAD_RWLOCK_INITIALIZER;
 
 // UTILITY HELPERS 
@@ -71,123 +77,174 @@ static int sockaddrs_equal(const struct sockaddr_in *a, const struct sockaddr_in
            (a->sin_addr.s_addr == b->sin_addr.s_addr);
 }
 
-// Find client index by address (returns -1 if not found) 
-static int find_client_by_addr(const struct sockaddr_in *addr) {
-    for (int i = 0; i < MAX_CLIENTS; ++i) {
-        if (clients[i].active && sockaddrs_equal(&clients[i].addr, addr)) return i;
+// Linear scan through linked list
+static ClientNode *find_client_by_addr(const struct sockaddr_in *addr) {
+    ClientNode *cur = clients_head;
+    while (cur) {
+        if (cur->client.active && sockaddrs_equal(&cur->client.addr, addr))
+            return cur;
+        cur = cur->next;
     }
-    return -1;
+    return NULL;
 }
 
-// Find client index by name (returns -1 if not found) 
-static int find_client_by_name(const char *name) {
-    for (int i = 0; i < MAX_CLIENTS; ++i) {
-        if (clients[i].active && strcmp(clients[i].name, name) == 0) return i;
+// Find client node by name 
+static ClientNode *find_client_by_name(const char *name) {
+    ClientNode *cur = clients_head;
+    while (cur) {
+        if (cur->client.active && strcmp(cur->client.name, name) == 0)
+            return cur;
+        cur = cur->next;
     }
-    return -1;
+    return NULL;
 }
 
-// Add client (enforcing unique name)
-static int add_client(const char *name, const struct sockaddr_in *addr) {
-    // enforce unique name
-    if (find_client_by_name(name) != -1) return -1;
 
-    for (int i = 0; i < MAX_CLIENTS; ++i) {
-        if (!clients[i].active) {
-            clients[i].active = 1;
-            strncpy(clients[i].name, name, MAX_NAME_LEN - 1);
-            clients[i].name[MAX_NAME_LEN - 1] = '\0';
-            clients[i].addr = *addr;
-            clients[i].muted_count = 0;
-            clients[i].last_active = time(NULL);
-            clients[i].ping_sent = 0;
-            clients[i].ping_time = 0;
-            return i;
-        }
+// Add client to head of linked list
+static ClientNode *add_client(const char *name, const struct sockaddr_in *addr) {
+    if (find_client_by_name(name)) return NULL;
+
+    ClientNode *node = malloc(sizeof(ClientNode));
+    if (!node) return NULL;
+
+    node->client.active = 1;
+    strncpy(node->client.name, name, MAX_NAME_LEN - 1);
+    node->client.name[MAX_NAME_LEN - 1] = '\0';
+
+    node->client.addr = *addr;
+    node->client.muted_count = 0;
+    node->client.last_active = time(NULL);
+    node->client.ping_sent = 0;
+    node->client.ping_time = 0;
+
+    node->next = clients_head;
+    clients_head = node;
+
+    return node;
+}
+
+
+// Remove client node from Linked List and free memory
+static void remove_client(ClientNode *target) {
+    if (!target) return;
+
+    ClientNode **indirect = &clients_head;
+
+    while (*indirect && *indirect != target)
+        indirect = &(*indirect)->next;
+
+    if (*indirect) {
+        ClientNode *tmp = *indirect;
+        *indirect = tmp->next;
+        free(tmp);
     }
-    return -1; //table full
 }
 
-// Remove client by index
-// Clears state and frees name
-static void remove_client_by_index(int idx) {
-    if (idx < 0 || idx >= MAX_CLIENTS) return;
-    clients[idx].active = 0;
-    clients[idx].name[0] = '\0';
-    clients[idx].muted_count = 0;
-    memset(&clients[idx].addr, 0, sizeof(clients[idx].addr));
-}
 
 // Add name to client's muted list 
-static int add_muted(int idx, const char *target) {
-    if (idx < 0 || idx >= MAX_CLIENTS) return -1;
-    if (clients[idx].muted_count >= MAX_MUTE) return -1;
-    // avoid duplicate
-    for (int i = 0; i < clients[idx].muted_count; ++i) {
-        if (strcmp(clients[idx].muted[i], target) == 0) return 0;
+static int add_muted(ClientNode *client, const char *target) {
+    if (!client) return -1;
+    Client *c = &client->client;
+
+    if (c->muted_count >= MAX_MUTE)
+        return -1;
+
+    // Prevent duplicates
+    for (int i = 0; i < c->muted_count; ++i) {
+        if (strcmp(c->muted[i], target) == 0)
+            return 0;
     }
-    strncpy(clients[idx].muted[clients[idx].muted_count], target, MAX_NAME_LEN - 1);
-    clients[idx].muted[clients[idx].muted_count][MAX_NAME_LEN - 1] = '\0';
-    clients[idx].muted_count++;
+
+    strncpy(c->muted[c->muted_count], target, MAX_NAME_LEN - 1);
+    c->muted[c->muted_count][MAX_NAME_LEN - 1] = '\0';
+    c->muted_count++;
+
     return 0;
 }
+
 
 // Remove name from client's muted list 
-static int remove_muted(int idx, const char *target) {
-    if (idx < 0 || idx >= MAX_CLIENTS) return -1;
+static int remove_muted(ClientNode *client, const char *target) {
+    if (!client) return -1;
+    Client *c = &client->client;
+
     int found = -1;
-    for (int i = 0; i < clients[idx].muted_count; ++i) {
-        if (strcmp(clients[idx].muted[i], target) == 0) { found = i; break; }
+
+    for (int i = 0; i < c->muted_count; ++i) {
+        if (strcmp(c->muted[i], target) == 0) {
+            found = i;
+            break;
+        }
     }
-    if (found == -1) return -1;
-    for (int i = found; i < clients[idx].muted_count - 1; ++i) {
-        strncpy(clients[idx].muted[i], clients[idx].muted[i+1], MAX_NAME_LEN);
+
+    if (found == -1)
+        return -1;
+
+    // Shift entries left
+    for (int i = found; i < c->muted_count - 1; ++i) {
+        strncpy(c->muted[i], c->muted[i + 1], MAX_NAME_LEN);
     }
-    clients[idx].muted_count--;
-    clients[idx].muted[clients[idx].muted_count][0] = '\0';
+
+    c->muted_count--;
+    c->muted[c->muted_count][0] = '\0';
+
     return 0;
 }
+
 
 // Check if recipient has muted sender 
-static int recipient_has_muted_sender(int recipient_idx, const char *sender_name) {
-    if (recipient_idx < 0 || recipient_idx >= MAX_CLIENTS) return 0;
-    for (int i = 0; i < clients[recipient_idx].muted_count; ++i) {
-        if (strcmp(clients[recipient_idx].muted[i], sender_name) == 0) return 1;
+static int recipient_has_muted_sender(ClientNode *recipient, const char *sender_name) {
+    if (!recipient) return 0;
+    Client *c = &recipient->client;
+
+    for (int i = 0; i < c->muted_count; ++i) {
+        if (strcmp(c->muted[i], sender_name) == 0)
+            return 1;
     }
+
     return 0;
 }
 
+
 // Broadcast message to all clients
-// Writes to history and skips optional sender index 
-static void broadcast_all(int sd, const char *msg, int skip_idx) {
+// Writes to history 
+static void broadcast_all(int sd, const char *msg, ClientNode *skip) {
+
     history_add(msg);
+
     pthread_rwlock_rdlock(&clients_lock);
-    for (int i = 0; i < MAX_CLIENTS; ++i) {
-        if (!clients[i].active) continue;
-        if (i == skip_idx) continue;
-        udp_socket_write(sd, &clients[i].addr, msg, strlen(msg));
+
+    ClientNode *cur = clients_head;
+    while (cur) {
+        if (cur != skip && cur->client.active) {
+            udp_socket_write(sd, &cur->client.addr, msg, strlen(msg));
+        }
+        cur = cur->next;
     }
     pthread_rwlock_unlock(&clients_lock);
 }
 
 // Broadcast sender's message respecting mute lists
-static void broadcast_from_sender(int sd, int sender_idx, const char *msg) {
-    if (sender_idx < 0 || sender_idx >= MAX_CLIENTS) return;
-    char sender_name[MAX_NAME_LEN];
-    strncpy(sender_name, clients[sender_idx].name, MAX_NAME_LEN);
-    sender_name[MAX_NAME_LEN - 1] = '\0';
+static void broadcast_from_sender(int sd, ClientNode *sender, const char *msg) {
+    if (!sender) return;
 
     history_add(msg);
-    
+
     pthread_rwlock_rdlock(&clients_lock);
-    for (int i = 0; i < MAX_CLIENTS; ++i) {
-        if (!clients[i].active) continue;
-        if (i == sender_idx) continue;
-        if (recipient_has_muted_sender(i, sender_name)) continue;
-        udp_socket_write(sd, &clients[i].addr, msg, strlen(msg));
+
+    ClientNode *cur = clients_head;
+    while (cur) {
+        if (cur != sender && cur->client.active &&
+            !recipient_has_muted_sender(cur, sender->client.name)) {
+
+            udp_socket_write(sd, &cur->client.addr, msg, strlen(msg));
+        }
+        cur = cur->next;
     }
+
     pthread_rwlock_unlock(&clients_lock);
 }
+
 
 // Append a message to history (thread-safe)
 static void history_add(const char *msg) {
@@ -291,27 +348,27 @@ static void *request_handler(void *v) {
     // Respond to ret-ping immediately
     if (strcmp(type, "ret-ping") == 0) {
         pthread_rwlock_wrlock(&clients_lock);
-        int idx = find_client_by_addr(&client_addr);
-        if (idx != -1) {
-            clients[idx].last_active = time(NULL);
-            clients[idx].ping_sent = 0;
-            clients[idx].ping_time = 0;
+        ClientNode *node = find_client_by_addr(&client_addr);
+        if (node) {
+            node->client.last_active = time(NULL);
+            node->client.ping_sent = 0;
+            node->client.ping_time = 0;
         }
         pthread_rwlock_unlock(&clients_lock);
         return NULL;
     }
 
-    // Identify sender index (if exists)
+    // Identify sender node 
     pthread_rwlock_rdlock(&clients_lock);
-    int sender_idx = find_client_by_addr(&client_addr);
+    ClientNode *sender = find_client_by_addr(&client_addr);
     pthread_rwlock_unlock(&clients_lock);
 
-    if (sender_idx != -1) {
+    if (sender) {
         // update last active time
         pthread_rwlock_wrlock(&clients_lock);
-        clients[sender_idx].last_active = time(NULL);
-        clients[sender_idx].ping_sent = 0; 
-        clients[sender_idx].ping_time = 0;
+        sender->client.last_active = time(NULL);
+        sender->client.ping_sent = 0;
+        sender->client.ping_time = 0;
         pthread_rwlock_unlock(&clients_lock);
     }
 
@@ -328,39 +385,41 @@ static void *request_handler(void *v) {
         // register under write lock
         pthread_rwlock_wrlock(&clients_lock);
         // check if already registered by address: update name if so
-        int existing = find_client_by_addr(&client_addr);
-        if (existing != -1) {
-            // update name if not duplicate
-            if (find_client_by_name(payload) != -1 && strcmp(clients[existing].name, payload) != 0) {
+        ClientNode *existing = find_client_by_addr(&client_addr);
+
+        if (existing) {
+            if (find_client_by_name(payload) && strcmp(existing->client.name, payload) != 0) {
                 pthread_rwlock_unlock(&clients_lock);
                 char resp[BUFFER_SIZE];
                 snprintf(resp, BUFFER_SIZE, "ERR$Name '%s' already in use\n", payload);
                 udp_socket_write(sd, &client_addr, resp, strlen(resp));
                 return NULL;
             }
-            strncpy(clients[existing].name, payload, MAX_NAME_LEN - 1);
-            clients[existing].name[MAX_NAME_LEN - 1] = '\0';
-            sender_idx = existing;
+
+            strncpy(existing->client.name, payload, MAX_NAME_LEN - 1);
+            existing->client.name[MAX_NAME_LEN - 1] = '\0';
+            sender = existing;
         } else {
-            // new registration, ensure name not in use
-            if (find_client_by_name(payload) != -1) {
+            if (find_client_by_name(payload)) {
                 pthread_rwlock_unlock(&clients_lock);
                 char resp[BUFFER_SIZE];
                 snprintf(resp, BUFFER_SIZE, "ERR$Name '%s' already in use\n", payload);
                 udp_socket_write(sd, &client_addr, resp, strlen(resp));
                 return NULL;
             }
-            // add client
-            int idx = add_client(payload, &client_addr);
-            if (idx == -1) {
+
+            ClientNode *node = add_client(payload, &client_addr);
+            if (!node) {
                 pthread_rwlock_unlock(&clients_lock);
                 char resp[BUFFER_SIZE];
                 snprintf(resp, BUFFER_SIZE, "ERR$Server full or name taken\n");
                 udp_socket_write(sd, &client_addr, resp, strlen(resp));
                 return NULL;
             }
-            sender_idx = idx;
+
+            sender = node;
         }
+
         pthread_rwlock_unlock(&clients_lock);
 
         // Send confirmation to new client
@@ -374,87 +433,94 @@ static void *request_handler(void *v) {
         // Notify others
         char announce[BUFFER_SIZE];
         snprintf(announce, BUFFER_SIZE, "SYS$%s has joined the chat\n", payload);
-        broadcast_all(sd, announce, sender_idx); // skip sender (sender already got welcome)
+        broadcast_all(sd, announce, sender); // skip sender (sender already got welcome)
 
         return NULL;
     }
 
     // Handle say$message (broadcast) 
     if (strcmp(type, "say") == 0) {
-        if (sender_idx == -1) {
-            // sender not registered
-            char resp[BUFFER_SIZE];
-            snprintf(resp, BUFFER_SIZE, "ERR$You must conn$<name> before sending messages\n");
-            udp_socket_write(sd, &client_addr, resp, strlen(resp));
-            return NULL;
-        }
-        // compose message: "Alice: Hello"
-        char out[BUFFER_SIZE];
-        snprintf(out, BUFFER_SIZE, "%s: %s\n", clients[sender_idx].name, payload);
 
-        // broadcast to all, but respect mute lists
-        broadcast_from_sender(sd, sender_idx, out);
-
+    if (!sender) {
+        char resp[BUFFER_SIZE];
+        snprintf(resp, BUFFER_SIZE,
+                "ERR$You must conn$<name> before sending messages\n");
+        udp_socket_write(sd, &client_addr, resp, strlen(resp));
         return NULL;
     }
 
-    //Handle sayto$recipient message 
+    if (!payload || strlen(payload) == 0)
+        return NULL; // silently ignore empty messages
+
+    char out[BUFFER_SIZE];
+    snprintf(out, BUFFER_SIZE, "%s: %s\n", sender->client.name, payload);
+
+    broadcast_from_sender(sd, sender, out);
+    return NULL;
+    }
+
+
+    // Handle sayto$user message
     if (strcmp(type, "sayto") == 0) {
-        if (sender_idx == -1) {
+
+        if (!sender) {
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "ERR$You must conn$<name> before sending messages\n");
             udp_socket_write(sd, &client_addr, resp, strlen(resp));
             return NULL;
         }
-        // payload expected: "recipient message..."
-        // extract recipient name (first token) and rest message
-        char *recipient = strtok(payload, " ");
-        char *msg_rest = strtok(NULL, ""); // the rest (may be NULL if empty message)
-        if (!recipient || strlen(recipient) == 0) {
+
+        char *recipient_name = strtok(payload, " ");
+        char *msg_rest = strtok(NULL, "");
+
+        if (!recipient_name || !msg_rest) {
             char resp[BUFFER_SIZE];
-            snprintf(resp, BUFFER_SIZE, "ERR$sayto requires a recipient name and a message\n");
+            snprintf(resp, BUFFER_SIZE, "ERR$sayto requires a recipient and message\n");
             udp_socket_write(sd, &client_addr, resp, strlen(resp));
             return NULL;
         }
-        int recv_idx;
+
         pthread_rwlock_rdlock(&clients_lock);
-        recv_idx = find_client_by_name(recipient);
+        ClientNode *recipient = find_client_by_name(recipient_name);
         pthread_rwlock_unlock(&clients_lock);
-        if (recv_idx == -1) {
+
+        if (!recipient) {
             char resp[BUFFER_SIZE];
-            snprintf(resp, BUFFER_SIZE, "ERR$Recipient '%s' not found\n", recipient);
+            snprintf(resp, BUFFER_SIZE, "ERR$Recipient '%s' not found\n", recipient_name);
             udp_socket_write(sd, &client_addr, resp, strlen(resp));
             return NULL;
         }
-        // check if recipient muted sender
+
         pthread_rwlock_rdlock(&clients_lock);
-        int muted = recipient_has_muted_sender(recv_idx, clients[sender_idx].name);
+        int muted = recipient_has_muted_sender(recipient, sender->client.name);
         pthread_rwlock_unlock(&clients_lock);
+
         if (muted) {
-            // act as if delivered silently (or optionally notify sender)
             char resp[BUFFER_SIZE];
-            snprintf(resp, BUFFER_SIZE, "SYS$Your message could not be delivered (you are muted by %s)\n", recipient);
+            snprintf(resp, BUFFER_SIZE,
+                    "SYS$Your message could not be delivered (you are muted by %s)\n",
+                    recipient->client.name);
             udp_socket_write(sd, &client_addr, resp, strlen(resp));
             return NULL;
         }
-        // send private message formatted: "Alice: hi\n"
+
         char out[BUFFER_SIZE];
-        if (msg_rest)
-            snprintf(out, BUFFER_SIZE, "%s (private): %s\n", clients[sender_idx].name, msg_rest);
-        else
-            snprintf(out, BUFFER_SIZE, "%s (private): \n", clients[sender_idx].name);
-        udp_socket_write(sd, &clients[recv_idx].addr, out, strlen(out));
-        // optionally ack sender
+        snprintf(out, BUFFER_SIZE, "%s (private): %s\n",
+                sender->client.name, msg_rest);
+
+        udp_socket_write(sd, &recipient->client.addr, out, strlen(out));
+
         char ack[BUFFER_SIZE];
-        snprintf(ack, BUFFER_SIZE, "SYS$Message delivered to %s\n", recipient);
+        snprintf(ack, BUFFER_SIZE, "SYS$Message delivered to %s\n", recipient->client.name);
         udp_socket_write(sd, &client_addr, ack, strlen(ack));
 
         return NULL;
     }
 
+
     // Handle mute$name 
     if (strcmp(type, "mute") == 0) {
-        if (sender_idx == -1) {
+        if (!sender) {
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "ERR$You must conn$<name> before muting users\n");
             udp_socket_write(sd, &client_addr, resp, strlen(resp));
@@ -467,7 +533,8 @@ static void *request_handler(void *v) {
             return NULL;
         }
         pthread_rwlock_wrlock(&clients_lock);
-        int res = add_muted(sender_idx, payload);
+        sender = find_client_by_addr(&client_addr);
+        int res = add_muted(sender, payload);
         pthread_rwlock_unlock(&clients_lock);
         if (res == 0) {
             char resp[BUFFER_SIZE];
@@ -483,7 +550,7 @@ static void *request_handler(void *v) {
 
     // Handle unmute$name 
     if (strcmp(type, "unmute") == 0) {
-        if (sender_idx == -1) {
+        if (!sender) {
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "ERR$You must conn$<name> before unmuting users\n");
             udp_socket_write(sd, &client_addr, resp, strlen(resp));
@@ -496,7 +563,8 @@ static void *request_handler(void *v) {
             return NULL;
         }
         pthread_rwlock_wrlock(&clients_lock);
-        int res = remove_muted(sender_idx, payload);
+        sender = find_client_by_addr(&client_addr);
+        int res = remove_muted(sender, payload);
         pthread_rwlock_unlock(&clients_lock);
         if (res == 0) {
             char resp[BUFFER_SIZE];
@@ -512,7 +580,7 @@ static void *request_handler(void *v) {
 
     // Handle rename$new_name 
     if (strcmp(type, "rename") == 0) {
-        if (sender_idx == -1) {
+        if (!sender) {
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "ERR$You must conn$<name> before renaming\n");
             udp_socket_write(sd, &client_addr, resp, strlen(resp));
@@ -526,7 +594,8 @@ static void *request_handler(void *v) {
         }
         pthread_rwlock_wrlock(&clients_lock);
         // check duplicate
-        if (find_client_by_name(payload) != -1) {
+        ClientNode *existing = find_client_by_name(payload);
+        if (existing && existing != sender) {
             pthread_rwlock_unlock(&clients_lock);
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "ERR$Name '%s' already in use\n", payload);
@@ -534,9 +603,9 @@ static void *request_handler(void *v) {
             return NULL;
         }
         char old_name[MAX_NAME_LEN];
-        strncpy(old_name, clients[sender_idx].name, MAX_NAME_LEN);
-        strncpy(clients[sender_idx].name, payload, MAX_NAME_LEN - 1);
-        clients[sender_idx].name[MAX_NAME_LEN - 1] = '\0';
+        strncpy(old_name, sender->client.name, MAX_NAME_LEN);
+        strncpy(sender->client.name, payload, MAX_NAME_LEN - 1);
+        sender->client.name[MAX_NAME_LEN - 1] = '\0';
         pthread_rwlock_unlock(&clients_lock);
 
         char resp[BUFFER_SIZE];
@@ -546,14 +615,14 @@ static void *request_handler(void *v) {
         // broadcast rename to others
         char announce[BUFFER_SIZE];
         snprintf(announce, BUFFER_SIZE, "SYS$%s is now known as %s\n", old_name, payload);
-        broadcast_all(sd, announce, sender_idx);
+        broadcast_all(sd, announce, sender);
 
         return NULL;
     }
 
     // Handle disconn$ (disconnect) 
     if (strcmp(type, "disconn") == 0) {
-        if (sender_idx == -1) {
+        if (!sender) {
             // might be not registered, but still reply
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "SYS$You are not connected\n");
@@ -563,8 +632,8 @@ static void *request_handler(void *v) {
         // remember name to broadcast
         char namebuf[MAX_NAME_LEN];
         pthread_rwlock_wrlock(&clients_lock);
-        strncpy(namebuf, clients[sender_idx].name, MAX_NAME_LEN);
-        remove_client_by_index(sender_idx);
+        strncpy(namebuf, sender->client.name, MAX_NAME_LEN);
+        remove_client(sender);
         pthread_rwlock_unlock(&clients_lock);
 
         char resp[BUFFER_SIZE];
@@ -573,7 +642,7 @@ static void *request_handler(void *v) {
 
         char announce[BUFFER_SIZE];
         snprintf(announce, BUFFER_SIZE, "SYS$%s has left the chat\n", namebuf);
-        broadcast_all(sd, announce, -1);
+        broadcast_all(sd, announce, NULL);
         return NULL;
     }
 
@@ -594,29 +663,32 @@ static void *request_handler(void *v) {
             return NULL;
         }
         pthread_rwlock_wrlock(&clients_lock);
-        int target_idx = find_client_by_name(payload);
-        if (target_idx == -1) {
+        ClientNode *target = find_client_by_name(payload);
+        if (!target) {
             pthread_rwlock_unlock(&clients_lock);
             char resp[BUFFER_SIZE];
             snprintf(resp, BUFFER_SIZE, "ERR$Client '%s' not found\n", payload);
             udp_socket_write(sd, &client_addr, resp, strlen(resp));
             return NULL;
         }
-        // send removal message to target
-        char notify_target[BUFFER_SIZE];
-        snprintf(notify_target, BUFFER_SIZE, "SYS$You have been removed from the chat\n");
-        udp_socket_write(sd, &clients[target_idx].addr, notify_target, strlen(notify_target));
 
-        // remember name then remove
         char removed_name[MAX_NAME_LEN];
-        strncpy(removed_name, clients[target_idx].name, MAX_NAME_LEN);
-        remove_client_by_index(target_idx);
+        strncpy(removed_name, target->client.name, MAX_NAME_LEN);
+
+        struct sockaddr_in kicked_addr = target->client.addr;
+        remove_client(target);
+
         pthread_rwlock_unlock(&clients_lock);
 
-        // broadcast removal
+        // notify kicked client
+        char notify_target[BUFFER_SIZE];
+        snprintf(notify_target, BUFFER_SIZE, "SYS$You have been removed from the chat\n");
+        udp_socket_write(sd, &kicked_addr, notify_target, strlen(notify_target));
+
+        // broadcast
         char announce[BUFFER_SIZE];
         snprintf(announce, BUFFER_SIZE, "SYS$%s has been removed from the chat\n", removed_name);
-        broadcast_all(sd, announce, -1);
+        broadcast_all(sd, announce, NULL);
 
         return NULL;
     }
@@ -633,9 +705,9 @@ static void *request_handler(void *v) {
 /*
  Background thread that removes inactive clients.
  Process:
-   1. Periodically scan table for LRU client
-   2. If inactive for threshold → send ping
-   3. If ping times out → disconnect
+   1. Periodically scan linked-list for least-recently-active client (LRU)
+   2. If inactive > threshold → send ping
+   3. If ping times out → remove client
 */
 static void *monitor_thread(void *v) {
     int sd = *(int *)v;
@@ -644,92 +716,93 @@ static void *monitor_thread(void *v) {
         sleep(MONITOR_INTERVAL);
         time_t now = time(NULL);
 
-        int target_idx = -1;
+        ClientNode *target = NULL;
         time_t oldest = now;
 
-        // Find the least recently active client
         pthread_rwlock_rdlock(&clients_lock);
-        for (int i = 0; i < MAX_CLIENTS; ++i) {
-            if (!clients[i].active) continue;
-            if (clients[i].last_active <= oldest) {
-                oldest = clients[i].last_active;
-                target_idx = i;
+        ClientNode *cur = clients_head;
+
+        while (cur) {
+            if (cur->client.active && cur->client.last_active <= oldest) {
+                oldest = cur->client.last_active;
+                target = cur;
             }
+            cur = cur->next;
         }
+
         pthread_rwlock_unlock(&clients_lock);
 
-        if (target_idx == -1) 
-            continue;   // no active clients
+        if (!target)
+            continue;   // no active clients at all
 
-        // Has the client reached inactivity threshold?
-        if ((now - oldest) >= INACTIVITY_THRESHOLD) {
+        if ((now - oldest) < INACTIVITY_THRESHOLD)
+            continue;
 
-            pthread_rwlock_wrlock(&clients_lock);
+        pthread_rwlock_wrlock(&clients_lock);
 
-            if (!clients[target_idx].active) {
-                pthread_rwlock_unlock(&clients_lock);
-                continue;
+        // safety check – client might have been removed by worker thread
+        ClientNode *check = clients_head;
+        int still_exists = 0;
+        while (check) {
+            if (check == target) {
+                still_exists = 1;
+                break;
             }
+            check = check->next;
+        }
 
-            // If no ping sent yet, send one
-            if (clients[target_idx].ping_sent == 0) {
+        if (!still_exists) {
+            pthread_rwlock_unlock(&clients_lock);
+            continue;
+        }
 
-                clients[target_idx].ping_sent = 1;
-                clients[target_idx].ping_time = now;
+        if (target->client.ping_sent == 0) {
 
-                struct sockaddr_in target_addr = clients[target_idx].addr;
+            target->client.ping_sent = 1;
+            target->client.ping_time = now;
 
-                pthread_rwlock_unlock(&clients_lock);
-
-                char ping_msg[BUFFER_SIZE];
-                snprintf(ping_msg, BUFFER_SIZE, "ping$");
-                udp_socket_write(sd, &target_addr, ping_msg, strlen(ping_msg));
-
-                continue;
-            }
-
-            // Ping was sent before — check if timeout has passed
-            time_t ptime = clients[target_idx].ping_time;
-
+            struct sockaddr_in addr = target->client.addr;
             pthread_rwlock_unlock(&clients_lock);
 
-            if ((now - ptime) >= PING_TIMEOUT) {
+            char ping_msg[BUFFER_SIZE];
+            snprintf(ping_msg, BUFFER_SIZE, "ping$");
+            udp_socket_write(sd, &addr, ping_msg, strlen(ping_msg));
 
-                pthread_rwlock_wrlock(&clients_lock);
-
-                if (!clients[target_idx].active) {
-                    pthread_rwlock_unlock(&clients_lock);
-                    continue;
-                }
-
-                // Save info before removal
-                struct sockaddr_in kicked_addr = clients[target_idx].addr;
-
-                char removed_name[MAX_NAME_LEN];
-                strncpy(removed_name, clients[target_idx].name, MAX_NAME_LEN);
-                removed_name[MAX_NAME_LEN - 1] = '\0';
-
-                // Remove client
-                remove_client_by_index(target_idx);
-
-                pthread_rwlock_unlock(&clients_lock);
-
-                // Notify removed client
-                char notify_target[BUFFER_SIZE];
-                snprintf(notify_target, BUFFER_SIZE,
-                         "SYS$You have been disconnected due to inactivity\n");
-                udp_socket_write(sd, &kicked_addr, notify_target, strlen(notify_target));
-
-                // Notify everyone else
-                char announce[BUFFER_SIZE];
-                snprintf(announce, BUFFER_SIZE,
-                         "SYS$%s has been disconnected due to inactivity\n",
-                         removed_name);
-                broadcast_all(sd, announce, -1);
-
-                continue;
-            }
+            continue;
         }
+
+        time_t sent = target->client.ping_time;
+        pthread_rwlock_unlock(&clients_lock);
+
+        if ((now - sent) < PING_TIMEOUT)
+            continue;
+
+        pthread_rwlock_wrlock(&clients_lock);
+
+        // client might have sent activity in the meantime
+        if (!target->client.active || target->client.ping_sent == 0) {
+            pthread_rwlock_unlock(&clients_lock);
+            continue;
+        }
+
+        struct sockaddr_in kicked_addr = target->client.addr;
+        char removed_name[MAX_NAME_LEN];
+        strncpy(removed_name, target->client.name, MAX_NAME_LEN);
+        removed_name[MAX_NAME_LEN - 1] = '\0';
+
+        remove_client(target);
+        pthread_rwlock_unlock(&clients_lock);
+
+        char notify_target[BUFFER_SIZE];
+        snprintf(notify_target, BUFFER_SIZE,
+                 "SYS$You have been disconnected due to inactivity\n");
+        udp_socket_write(sd, &kicked_addr, notify_target, strlen(notify_target));
+
+        char announce[BUFFER_SIZE];
+        snprintf(announce, BUFFER_SIZE,
+                 "SYS$%s has been disconnected due to inactivity\n",
+                 removed_name);
+        broadcast_all(sd, announce, NULL);
     }
 
     return NULL;
@@ -745,13 +818,12 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Zero client table
-    memset(clients, 0, sizeof(clients));
-
     // Start monitor thread
     pthread_t monitor_tid;
     if (pthread_create(&monitor_tid, NULL, monitor_thread, &sd) != 0) {
         perror("pthread_create");
+        close(sd);
+        return 1;
     }
     pthread_detach(monitor_tid);
 
