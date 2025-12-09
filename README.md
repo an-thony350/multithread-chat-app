@@ -20,7 +20,7 @@ Denzil Erza-Essien - 0259 3040
 - [Build & Run (exact flags used)](#build--run-exact-flags-used)
 - [Supported Commands](#supported-commands)
 - [Repository layout](#repository-layout)
-- [Conlusion & Future Improvements](#future-improvements)
+- [Conclusion & Future Improvements](#conclusion--future-improvements)
   - [Conclusion](#conclusion)
   - [Future Improvements](#future-improvements)
 
@@ -53,7 +53,7 @@ Denzil Erza-Essien - 0259 3040
   } ClientNode;
   ```
 - The head pointer `static ClientNode *clients_head;` represents the start of the client list
-- Alinked list is used due to its dynamic size, having no wasted memory, or any client limits.
+- A linked list is used to allow dynamic growth of connected clients without imposing a fixed maximum client limit in code. Clients can be added and removed without shifting memory, which simplifies implementation for insertion and deletion.
 
 ### Networking and worker model
 - Main listener loop:
@@ -65,9 +65,9 @@ Denzil Erza-Essien - 0259 3040
   - For malformed or unknown commands it replies with an `ERR$`-prefixed message.
 
 ### Broadcasting, private messages, and mute handling
-- `broadcast_all(sd, msg, skip_idx)`:
+- `broadcast_all(sd, msg, skip)`:
   - Writes the message to history then iterates active clients and uses `udp_socket_write` to send to each (skips `skip_idx` when provided).
-- `broadcast_from_sender(sd, sender_idx, msg)`:
+- `broadcast_from_sender(sd, sender, msg)`:
   - Respects recipients' mute lists by calling `recipient_has_muted_sender`.
   - Does not deliver a sender's message to themselves.
 - Private messaging (`sayto`):
@@ -205,9 +205,9 @@ pkill chat_server
 
 ### Conclusion
 
-This project demonstrates a complete multithreaded UDP-based chat application with support for both public and private messaging, mute functionality, administration controls, history replay, and inactivity detection. The system was designed with concurrency and fault tolerance in mind, using POSIX threads, synchronisation primitives, and careful message handling.
+This project demonstrates a complete multithreaded UDP-based chat application with support for both public and private messaging, mute functionality, administration controls, history replay, and inactivity detection. The system was designed with concurrency and robustness in mind, using POSIX threads, synchronisation primitives, and careful message handling.
 
-The use of a linked list for client storage allows the server to scale dynamically without imposing artificial limits on the number of users. The separation between a listener thread, worker threads, and a monitor thread ensures responsive behaviour under concurrency and makes the program modular and maintainable.
+The use of a linked list for client storage allows the server to scale dynamically. The separation between a listener thread, worker threads, and a monitor thread ensures responsive behaviour under concurrency and makes the program modular and maintainable.
 
 Overall, the project meets its design goals and demonstrates effective use of networking, multithreading, and data structures in C.
 
@@ -226,7 +226,6 @@ Several enhancements could be made if the project were extended further:
 
 *Security*
 - Add username authentication or password protection.
-- Encrypt traffic using TLS or encryption at the application level.
 - Restrict admin commands via authentication rather than by port number.
 
 *Features*
