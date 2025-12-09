@@ -70,14 +70,14 @@ static pthread_rwlock_t clients_lock = PTHREAD_RWLOCK_INITIALIZER;
 
 // UTILITY HELPERS 
 
-//Compare two sockaddr_in for equality (IP + port) 
+//Compare two sockaddr_in for equality (as c doesn't let us use ==)
 static int sockaddrs_equal(const struct sockaddr_in *a, const struct sockaddr_in *b) {
     return (a->sin_family == b->sin_family) &&
            (a->sin_port == b->sin_port) &&
            (a->sin_addr.s_addr == b->sin_addr.s_addr);
 }
 
-// Linear scan through linked list
+// Linear scan through linked list 
 static ClientNode *find_client_by_addr(const struct sockaddr_in *addr) {
     ClientNode *cur = clients_head;
     while (cur) {
