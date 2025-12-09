@@ -19,8 +19,10 @@ Denzil Erza-Essien - 0259 3040
   - [Admin mode and ports](#admin-mode-and-ports)
 - [Build & Run (exact flags used)](#build--run-exact-flags-used)
 - [Supported Commands](#supported-commands)
-- [Testing](#testing)
 - [Repository layout](#repository-layout)
+- [Conlusion & Future Improvements](#future-improvements)
+  - [Conclusion](#conclusion)
+  - [Future Improvements](#future-improvements)
 
 ---
 
@@ -190,30 +192,6 @@ pkill chat_server
 | ret-ping$             | Client heartbeat reply                    |
 
 ---
-## Testing
-
-Automated test scripts are included under `test_scripts/` covering:
-
-- Basic client-server communication
-- Broadcast testing
-- History buffer correctness
-- Inactivity detection and removal
-- Multi-client behaviour
-- Stress/load testing
-
-All scripts can be run individually:
-
-```bash
-python3 test_basics.py
-python3 test_history.py
-python3 test_inactivity.py
-python3 test_multiclient.py
-python3 test_stress.py
-python3 test_stress_valid.py
-python3 test_malformed
-```
-
----
 ## Repository layout
 - `chat_server.c` — server (listener, worker threads, monitor thread, client table, history)
 - `chat_client.c` — client (ncurses UI, sender/listener threads)
@@ -240,8 +218,6 @@ Several enhancements could be made if the project were extended further:
 
 *Protocol & Networking*
 - Convert from UDP to TCP for guaranteed delivery and packet ordering.
-- Add message acknowledgements or sequence numbers to improve reliability over UDP.
-- Support IPv6 and user-defined server addresses.
 
 *Scalability & Performance*
 - Replace linear linked-list searching with a hash table for faster name and address lookup.
@@ -256,8 +232,6 @@ Several enhancements could be made if the project were extended further:
 *Features*
 - Implement user-defined status messages (e.g., "away", "busy").
 - Add chat room support.
-- Support file transfers or media messaging.
-- Add client-side logging and history persistence.
 
 *UI Improvements*
 - Improve terminal layout handling under resize events.
