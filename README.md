@@ -223,4 +223,47 @@ python3 test_malformed
 
 ---
 
+## Conclusion & Future Improvements
+
+### Conclusion
+
+This project demonstrates a complete multithreaded UDP-based chat application with support for both public and private messaging, mute functionality, administration controls, history replay, and inactivity detection. The system was designed with concurrency and fault tolerance in mind, using POSIX threads, synchronisation primitives, and careful message handling.
+
+The use of a linked list for client storage allows the server to scale dynamically without imposing artificial limits on the number of users. The separation between a listener thread, worker threads, and a monitor thread ensures responsive behaviour under concurrency and makes the program modular and maintainable.
+
+Overall, the project meets its design goals and demonstrates effective use of networking, multithreading, and data structures in C.
+
+
+### Future Improvements
+
+Several enhancements could be made if the project were extended further:
+
+*Protocol & Networking*
+- Convert from UDP to TCP for guaranteed delivery and packet ordering.
+- Add message acknowledgements or sequence numbers to improve reliability over UDP.
+- Support IPv6 and user-defined server addresses.
+
+*Scalability & Performance*
+- Replace linear linked-list searching with a hash table for faster name and address lookup.
+- Add thread pooling instead of spawning unbounded worker threads.
+- Introduce rate limiting or flood protection to prevent abuse.
+
+*Security*
+- Add username authentication or password protection.
+- Encrypt traffic using TLS or encryption at the application level.
+- Restrict admin commands via authentication rather than by port number.
+
+*Features*
+- Implement user-defined status messages (e.g., "away", "busy").
+- Add chat room support.
+- Support file transfers or media messaging.
+- Add client-side logging and history persistence.
+
+*UI Improvements*
+- Improve terminal layout handling under resize events.
+- Highlight private messages or admin messages visually.
+- Add a sidebar showing online users.
+
+These changes would further improve robustness, usability, and scalability, while keeping the existing architecture as a strong foundation.
+
 
